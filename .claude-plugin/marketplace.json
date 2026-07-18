@@ -1,0 +1,19 @@
+{
+	"name": "codastre-plugins",
+	"description": "Give Claude topology-aware code retrieval: hybrid semantic + lexical search and a cross-repo knowledge graph, with built-in token-savings measurement.",
+	"owner": {
+		"name": "Codastre"
+	},
+	"plugins": [
+		{
+			"name": "codastre",
+			"description": "Topology-aware hybrid code search and cross-repo knowledge graph for Claude Code — fewer tokens, better hits than grep.",
+			"source": "./",
+			"version": "0.1.0",
+			"license": "Apache-2.0",
+			"repository": "https://github.com/codastre/codastre-claude",
+			"category": "development",
+			"homepage": "https://codastre.com"
+		}
+	]
+}

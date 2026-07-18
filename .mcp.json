@@ -1,0 +1,9 @@
+{
+	"mcpServers": {
+		"codastre": {
+			"type": "stdio",
+			"command": "codastre",
+			"args": ["serve"]
+		}
+	}
+}

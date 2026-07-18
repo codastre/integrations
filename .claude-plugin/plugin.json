@@ -1,0 +1,23 @@
+{
+	"name": "codastre",
+	"version": "0.1.0",
+	"description": "Topology-aware hybrid code search and cross-repo knowledge graph for Claude Code — fewer tokens, better hits than grep.",
+	"author": {
+		"name": "Codastre"
+	},
+	"homepage": "https://codastre.com",
+	"repository": "https://github.com/codastre/codastre-claude",
+	"license": "Apache-2.0",
+	"keywords": [
+		"code-search",
+		"semantic-search",
+		"hybrid-retrieval",
+		"knowledge-graph",
+		"cross-repo",
+		"kafka",
+		"token-efficiency",
+		"mcp",
+		"codastre"
+	],
+	"mcpServers": "./.mcp.json"
+}
