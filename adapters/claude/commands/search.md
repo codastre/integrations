@@ -1,6 +1,6 @@
 ---
 description: Search indexed repos with Codastre hybrid retrieval
-argument-hint: <query> [--repo URL] [--lang X] [--top-k N]
+argument-hint: <query> [--repo URL] [--path PREFIX] [--lang X] [--top-k N]
 allowed-tools: mcp__plugin_codastre_codastre__QUERY, mcp__codastre__QUERY, Read
 ---
 
@@ -8,7 +8,9 @@ Search using the Codastre `QUERY` MCP tool (whichever name is available: `mcp__p
 
 Arguments: `$ARGUMENTS`
 
-Parse the arguments: the free text is `query_text`; `--repo <url>` → `repo_url`, `--lang <x>` → `language`, `--top-k <n>` → `top_k` (default 10). With no `--repo`, search federated (omit `index_id` and `repo_url`) so every visible repo is covered.
+Parse the arguments: the free text is `query_text`; `--repo <url>` → `repo_url`, `--lang <x>` → `language`, `--path <prefix>` → `path_prefix`, `--top-k <n>` → `top_k` (default 10). With no `--repo`, search federated (omit `index_id` and `repo_url`) so every visible repo is covered.
+
+Phrase `query_text` in code vocabulary (identifiers, API names) rather than a full English question — it ranks better. If a federated search returns noisy results (top hits from unrelated repos, or all scores tiny and nearly equal), re-run scoped with `--repo` or `--path` rather than raising `--top-k`; on a large or mixed tenant, scoping is the fix, not more results.
 
 Present the results compactly:
 

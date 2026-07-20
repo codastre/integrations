@@ -8,10 +8,10 @@
 		{
 			"name": "codastre",
 			"description": "Topology-aware hybrid code search and cross-repo knowledge graph for Claude Code — fewer tokens, better hits than grep.",
-			"source": "./",
+			"source": "./adapters/claude",
 			"version": "0.1.0",
 			"license": "Apache-2.0",
-			"repository": "https://github.com/codastre/codastre-claude",
+			"repository": "https://github.com/codastre/integrations",
 			"category": "development",
 			"homepage": "https://codastre.com"
 		}

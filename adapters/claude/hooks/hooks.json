@@ -1,6 +1,17 @@
 {
-	"description": "Codastre hooks: inject QUERY/GRAPH awareness into sessions and subagents, nudge away from text search, and (opt-in) log search-tool token usage for savings reports",
+	"description": "Codastre hooks: inject QUERY/GRAPH awareness into sessions and subagents, nudge away from text search, enforce the live A/B search mode, and (opt-in) log search-tool token usage for savings reports",
 	"hooks": {
+		"UserPromptSubmit": [
+			{
+				"matcher": ".*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/mode_prompt.js\""
+					}
+				]
+			}
+		],
 		"SessionStart": [
 			{
 				"matcher": ".*",
@@ -26,6 +37,15 @@
 		],
 		"PreToolUse": [
 			{
+				"matcher": "Grep|Glob|Bash|.*codastre.*__(QUERY|GRAPH|REGISTER|SYNC)",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/mode.js\""
+					}
+				]
+			},
+			{
 				"matcher": "Grep|Glob",
 				"hooks": [
 					{
@@ -46,7 +66,7 @@
 		],
 		"PostToolUse": [
 			{
-				"matcher": ".*",
+				"matcher": "Grep|Glob|Bash|Read|.*codastre.*__(QUERY|GRAPH|REGISTER|SYNC)",
 				"hooks": [
 					{
 						"type": "command",

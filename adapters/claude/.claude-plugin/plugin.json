@@ -6,7 +6,7 @@
 		"name": "Codastre"
 	},
 	"homepage": "https://codastre.com",
-	"repository": "https://github.com/codastre/codastre-claude",
+	"repository": "https://github.com/codastre/integrations",
 	"license": "Apache-2.0",
 	"keywords": [
 		"code-search",

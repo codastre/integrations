@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://codastre.com/benchmarks/cases.schema.json",
+  "title": "Codastre benchmark cases",
+  "description": "Fixed Codastre + grep recipes with ground-truth answer keys, scored deterministically by run.py (no agent inference).",
+  "type": "object",
+  "required": ["repos", "cases"],
+  "additionalProperties": true,
+  "properties": {
+    "$schema": { "type": "string" },
+    "description": { "type": "string" },
+    "repos": {
+      "type": "object",
+      "description": "Short repo name -> {url, dir}. `dir` is the checkout dir under --workspace for the grep side.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["url", "dir"],
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string" },
+          "dir": { "type": "string" }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "question", "kind", "codastre", "grep", "expected"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "question": { "type": "string" },
+          "kind": { "type": "string", "description": "Free-text category, e.g. 'cross-repo kafka fan-out', 'identifier lookup', 'literal string (grep wins)'." },
+          "codastre": {
+            "type": "array",
+            "description": "Calls run as `codastre <tool> <args...> --json`.",
+            "items": {
+              "type": "object",
+              "required": ["tool", "args"],
+              "additionalProperties": false,
+              "properties": {
+                "tool": { "type": "string", "enum": ["query", "graph"] },
+                "args": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "grep": {
+            "type": "array",
+            "description": "Grep/rg recipes. `repos` are short names from the top-level `repos` map.",
+            "items": {
+              "type": "object",
+              "required": ["pattern", "repos"],
+              "additionalProperties": false,
+              "properties": {
+                "tool": { "type": "string" },
+                "pattern": { "type": "string" },
+                "repos": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "expected": {
+            "type": "array",
+            "description": "Ground-truth locations. Scored at file granularity; `line`/`role` document the true match.",
+            "items": {
+              "type": "object",
+              "required": ["repo", "path"],
+              "additionalProperties": false,
+              "properties": {
+                "repo": { "type": "string" },
+                "path": { "type": "string" },
+                "line": { "type": "integer" },
+                "role": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "$schema": "./cases.schema.json",
+  "description": "Golden benchmark cases: fixed Codastre + grep recipes with ground-truth answer keys. Scored deterministically by run.py — no agent inference. Add a case by pinning its exact calls and expected (repo,path,line) locations.",
+  "repos": {
+    "orders":        { "url": "github.com/jflbr/codastre-playground-orders-service",        "dir": "codastre-playground-orders-service" },
+    "billing":       { "url": "github.com/jflbr/codastre-playground-billing-service",       "dir": "codastre-playground-billing-service" },
+    "notifications": { "url": "github.com/jflbr/codastre-playground-notifications-service", "dir": "codastre-playground-notifications-service" },
+    "gateway":       { "url": "github.com/jflbr/codastre-playground-gateway-service",       "dir": "codastre-playground-gateway-service" }
+  },
+  "cases": [
+    {
+      "id": "orders-topic-fanout",
+      "question": "When an order is created, which services react to it and how?",
+      "kind": "cross-repo kafka fan-out",
+      "codastre": [
+        { "tool": "graph", "args": ["--topic", "orders", "--all"] }
+      ],
+      "grep": [
+        { "tool": "rg", "pattern": "subscribe\\(|produce\\(|KafkaProducer|KafkaConsumer|topic", "repos": ["orders", "billing", "notifications", "gateway"] }
+      ],
+      "expected": [
+        { "repo": "orders",        "path": "app/events.py",   "line": 8, "role": "producer" },
+        { "repo": "billing",       "path": "app/consumer.py", "line": 5, "role": "consumer" },
+        { "repo": "notifications", "path": "app/consumer.py", "line": 5, "role": "consumer" }
+      ]
+    },
+    {
+      "id": "billing-http-orders",
+      "question": "Does the billing service make an HTTP call to the orders service? Where?",
+      "kind": "cross-repo http edge",
+      "codastre": [
+        { "tool": "graph", "args": ["get_order", "--kind", "http", "--direction", "inbound", "--all"] }
+      ],
+      "grep": [
+        { "tool": "rg", "pattern": "requests\\.(get|post)|httpx|urlopen|/v1/orders", "repos": ["billing", "orders", "notifications", "gateway"] }
+      ],
+      "expected": [
+        { "repo": "billing", "path": "app/client.py", "line": 8, "role": "http-call" },
+        { "repo": "orders",  "path": "app/api.py",    "line": 7, "role": "handler" }
+      ]
+    },
+    {
+      "id": "query-order-created-event",
+      "question": "Where does the orders service publish the 'order created' event?",
+      "kind": "conceptual QUERY (semantic — codastre-favored)",
+      "codastre": [
+        { "tool": "query", "args": ["publish order created event kafka producer", "--repo-url", "github.com/jflbr/codastre-playground-orders-service", "--top-k", "5"] }
+      ],
+      "grep": [
+        { "tool": "rg", "pattern": "produce|publish|OrderCreated|order_created|emit", "repos": ["orders"] }
+      ],
+      "expected": [
+        { "repo": "orders", "path": "app/events.py", "line": 8, "role": "producer" }
+      ]
+    },
+    {
+      "id": "query-get-order-identifier",
+      "question": "Where is the get_order handler defined?",
+      "kind": "identifier QUERY (grep-competitive — a plain identifier both tools find)",
+      "codastre": [
+        { "tool": "query", "args": ["get_order", "--repo-url", "github.com/jflbr/codastre-playground-orders-service", "--top-k", "5"] }
+      ],
+      "grep": [
+        { "tool": "rg", "pattern": "def get_order|get_order", "repos": ["orders"] }
+      ],
+      "expected": [
+        { "repo": "orders", "path": "app/api.py", "line": 13, "role": "handler" }
+      ]
+    },
+    {
+      "id": "literal-config-key-grep-wins",
+      "question": "Find the exact literal Kafka config key `bootstrap.servers`.",
+      "kind": "literal string (grep WINS — honest counter-example)",
+      "codastre": [
+        { "tool": "query", "args": ["bootstrap.servers", "--all", "--top-k", "10"] }
+      ],
+      "grep": [
+        { "tool": "rg", "pattern": "bootstrap\\.servers", "repos": ["orders"] }
+      ],
+      "expected": [
+        { "repo": "orders", "path": "app/events.py", "line": 4, "role": "kafka-config" }
+      ]
+    }
+  ]
+}
