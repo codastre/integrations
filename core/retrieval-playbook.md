@@ -172,3 +172,48 @@ handler details. Each hop is one small ranked call instead of cloning and greppi
 - Symbol not found in GRAPH → names must match the indexed definition; run QUERY to recover the exact
   symbol name, then re-seed.
 - Literal strings, unindexed/uncommitted files → text search is the right tool; say so plainly.
+
+## 12. Fetching source when a result has no snippet
+
+A QUERY result is a **locator**: repo, path, line range, and `blob_sha`. When the response carries no
+`snippet`, the content must be fetched before it can be quoted. Adapters compile this into their own
+fetch/read primitives; the rules below are agent-neutral.
+
+**Diagnose before acting** — read `repos[repo_id].masking_scheme`:
+
+- `none` (cleartext): hydration is gated on an unmasking step cleartext repos skip, so a missing
+  snippet is *expected*, not a misconfiguration. Fetch the source.
+- `hmac` with a `path_token` and no `real_path`/`snippet`: the config is talking to the raw HTTP
+  endpoint instead of the local proxy. Fix the setup — that's the actual cause.
+
+Obtaining a checkout does **not** make snippets appear on a `none` repo; it yields files to read.
+GRAPH needs no source at all, so never fetch source for a purely structural question.
+
+**Never read a returned path directly.** `real_path`/`path_token` are repo-relative with **no repo
+prefix**, and such paths collide across repos in any large tenant (measured: 13 checkouts on one
+machine shared an `internal/infra/kafka/` tree). Resolving against the wrong repo root yields a real,
+plausible, wrong file **with no error** — the worst failure mode. Resolve the repo first, from
+`repos[repo_id].remote_url`.
+
+**Resolving a repo behind a GRAPH edge is harder than behind a QUERY hit.** GRAPH's `repos` map carries
+no `remote_url`, and there is no way to query *by* `repo_id`, so the "one cheap QUERY per repo" method
+only works when candidate repos are already known. With no candidates, search the forge for a
+distinctive path segment from the edge.
+
+**The CLI already tracks local checkouts.** `checkouts.json` in the CLI's config directory maps
+`remote_url` → absolute local path, keyed in the same format QUERY returns, and is the mechanism behind
+the `--repo-path` flag. Consult it before guessing a directory. It is **not exhaustive** — it lists only
+checkouts the CLI has seen — so also probe the clone root on disk, or you will re-clone every session.
+
+**Prefer a single-file fetch over a clone** for one to three files. Clone only for genuine exploration
+(grep, following imports). When cloning: derive the root from existing `checkouts.json` entries when
+possible (their common parent is the machine's convention), else default to a `checkouts/` tree beside
+the CLI's own config — creating the parent directory, which does not exist on a fresh machine. Blobless
+shallow clones are cheap (~4 s / 16 MB for a mid-size service). Never clone into the current repo's tree.
+
+**Verify `blob_sha` before quoting — always.** Compare the result's `blob_sha` against the checkout's
+blob hash for that path. One check catches both wrong-repo and stale-index at once. On mismatch, don't
+trust `line_start`: locate the symbol by name and say the index is behind. `stale: true` and
+`freshness: "syncing"`/`"degraded"` are corroborating signals.
+
+**Cite with the repo name.** A bare path is ambiguous across a multi-repo tenant.
