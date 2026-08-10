@@ -212,11 +212,19 @@ the forge for a distinctive path segment from the edge. Never infer a service fr
 the `--repo-path` flag. Consult it before guessing a directory. It is **not exhaustive** — it lists only
 checkouts the CLI has seen — so also probe the clone root on disk, or you will re-clone every session.
 
-**Prefer a single-file fetch over a clone** for one to three files. Clone only for genuine exploration
-(grep, following imports). When cloning: derive the root from existing `checkouts.json` entries when
-possible (their common parent is the machine's convention), else default to a `checkouts/` tree beside
-the CLI's own config — creating the parent directory, which does not exist on a fresh machine. Blobless
-shallow clones are cheap (~4 s / 16 MB for a mid-size service). Never clone into the current repo's tree.
+**Prefer a single-file fetch over a clone** for one to three files — that fetches one file's contents
+and touches no disk. Clone only for genuine exploration (grep, following imports); a clone brings the
+**whole repo at one commit**, not a file: blobless and shallow, so all paths are present with blob
+bytes on demand and no history (measured on a mid-size service: 1483 files, 1 commit, ~4 s, 16 MB on
+disk against 29 MB server-side for full history).
+
+When cloning, derive the root from existing checkout-registry entries when possible (their common
+parent is the machine's convention), else default to a `checkouts/` tree beside the CLI's own config,
+creating that root — it does not exist on a fresh machine. **Keep every root's layout flat,
+`<root>/<repo>`**, so a single probe finds a clone under any of them; a nested `<host>/<owner>/`
+layout makes the probe miss clones and re-clone each session. Same-named repos from different orgs
+then collide — give the second an explicit root rather than reintroducing nesting. Never clone into
+the current repo's tree.
 
 **Verify `blob_sha` before quoting — always.** Compare the result's `blob_sha` against the checkout's
 blob hash for that path. One check catches both wrong-repo and stale-index at once. On mismatch, don't

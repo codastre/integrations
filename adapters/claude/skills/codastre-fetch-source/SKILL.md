@@ -77,11 +77,14 @@ in-repo run"). If the path is present and exists, skip to step 4. A missing file
 registered yet; treat it as an empty map rather than an error.
 
 **The registry is not exhaustive.** It lists only checkouts the CLI has seen, so a clone *you* made in
-a previous session won't appear. Before concluding there is no checkout, also probe the resolved clone
-root from step 3b:
+a previous session won't appear. Before concluding there is no checkout, probe the candidate roots from
+step 3b. Every layout is `<root>/<repo>`, so one loop covers them all:
 
 ```bash
-git -C "<root>/<repo>" rev-parse --git-dir >/dev/null 2>&1 && echo "checkout exists"
+for root in "<derived-root>" "${XDG_CONFIG_HOME:-$HOME/.config}/codastre/checkouts"; do
+  [ -n "$root" ] || continue
+  git -C "$root/<repo>" rev-parse --git-dir >/dev/null 2>&1 && { echo "found: $root/<repo>"; break; }
+done
 ```
 
 Skipping this probe means re-cloning the same repo every session.
@@ -91,6 +94,16 @@ To get a clone into the registry, run any in-repo CLI command from inside it onc
 which the CLI owns.
 
 ## 3. Fetch what's missing
+
+Two granularities. **Never clone a repo to read one file.**
+
+| | 3a — single file | 3b — clone |
+|---|---|---|
+| Unit fetched | one file's contents | the **whole repo** at one commit |
+| Lands on disk | nothing | ~half a full clone (measured: 16 MB vs 29 MB server-side) |
+| History | none | 1 commit (`--depth 1`) |
+| File blobs | the one file | all paths present, blob bytes fetched on demand (`--filter=blob:none`) |
+| Use when | you need 1–3 files | you need to grep, follow imports, or explore |
 
 ### 3a. One to three specific files → no clone
 
@@ -122,15 +135,20 @@ Default to this. Cloning a repo to read one constant is wasteful.
    ```
    Prefer this whenever the registry is non-empty — it puts clones where the user already keeps them.
 3. **Default, alongside the CLI's own config:**
-   `${XDG_CONFIG_HOME:-$HOME/.config}/codastre/checkouts/<host>/<owner>/<repo>`.
+   `${XDG_CONFIG_HOME:-$HOME/.config}/codastre/checkouts/<repo>`.
    **This directory won't exist on a fresh machine — create it.** The CLI creates its config dir but
    no checkouts tree:
    ```bash
    ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/codastre/checkouts"
-   mkdir -p "$ROOT/<host>/<owner>"          # parent only; git creates the repo dir itself
+   mkdir -p "$ROOT"                         # root only; git creates the repo dir itself
    ```
    `mkdir -p` is idempotent, so it's safe to run every time. Don't pre-create the repo directory
    itself — `git clone` needs to create it, and cloning into an existing non-empty directory fails.
+
+   **Layout is flat — `<root>/<repo>`, matching option 2** so a single `<root>/<repo>` probe finds a
+   clone under any root. The cost is that two repos with the same name in different orgs collide; when
+   that happens, clone the second under an explicit root (option 1) rather than reintroducing a nested
+   `<host>/<owner>/` layout, which is what made the existence probe miss clones.
 
 **The clone itself** — portable, needs only `git`. Guard it so a re-run refreshes instead of failing:
 
