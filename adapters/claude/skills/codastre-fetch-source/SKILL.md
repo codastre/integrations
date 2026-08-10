@@ -8,17 +8,25 @@ description: This skill should be used when a Codastre QUERY result must be read
 A `QUERY` result is a **locator**: `repo_id`, `real_path`, `line_start`/`line_end`, and `blob_sha`.
 When the response carries no `snippet`, the content has to be fetched before it can be quoted.
 
-Snippets are absent whenever the local proxy doesn't hydrate them. Check the envelope's
-`repos[repo_id].masking_scheme` before diagnosing — the two cases have opposite fixes:
+**The rule: a snippet is hydrated exactly when the proxy knows a local checkout for that result's
+repo.** Hydration reads the file from disk, so no checkout means no snippet. Masking scheme is *not*
+the deciding factor — cleartext (`masking_scheme: none`) repos hydrate fine given a checkout. The
+proxy resolves the root per repo: the repo you're running inside, or one recorded in the CLI's
+`checkouts.json` (step 2).
 
-- **`masking_scheme: none`** — hydration is gated on an unmasking step that cleartext repos skip, so
-  missing snippets are *expected* and **not** a misconfiguration. Don't tell the user to switch to
-  `codastre serve`; they already are. Fetch the source as below.
-- **`masking_scheme: hmac`** with `path_token` and no `real_path`/`snippet` — the MCP config is
-  talking to the raw HTTP endpoint instead of `codastre serve`. Fix the setup; that's the real cause.
+So on a large tenant most federated hits arrive **without** snippets simply because those repos
+aren't cloned — the case this skill exists for. Cloning the repo *does* make snippets appear on the
+next call, once the checkout is known.
 
-Cloning does **not** make snippets appear on a `none`-scheme repo. It gives you files to read, which
-is the point here.
+Newer proxies say so explicitly: a snippet-less result carries a `hydration` field —
+`no_local_checkout` (clone it, or read via the forge API), `file_not_found_in_checkout` (checkout
+known but this ref lacks the path — fetch), or `read_error`. **Branch on it when present.** Its
+absence means either the snippet is there, or the proxy predates the field — fall back to the
+reasoning above.
+
+One genuine misconfiguration to distinguish: an **`hmac`** repo returning `path_token` with no
+`real_path` means the MCP config is talking to the raw HTTP endpoint instead of `codastre serve`. Fix
+that at the source rather than working around it.
 
 `GRAPH` is unaffected: its edges are metadata, not source, so structural questions ("what calls X",
 "who consumes topic T") are fully answerable with no checkout at all. Don't fetch source for those.
@@ -42,10 +50,13 @@ Every result carries `repo_id`; the response's top-level `repos` map resolves it
 repos[result.repo_id].remote_url   →   e.g. "github.com/<owner>/<repo>"
 ```
 
-**`GRAPH`'s `repos` map has no `remote_url`** — only `masking_scheme`/`mask_key_rev`. To name the repo
-behind a `GRAPH` edge, the "one QUERY per repo" method only works when you already hold candidate
-repos; you cannot query *by* `repo_id`. With no candidates, search the forge for a distinctive path
-segment from the edge, e.g. on GitHub:
+**Check `GRAPH`'s `repos` map for `remote_url` first.** The *server* omits it, sending only
+`masking_scheme`/`mask_key_rev`, but newer proxies backfill it locally — in which case the edge already
+names both services and no extra call is needed.
+
+When it is absent, the "one QUERY per repo" method only works if you already hold candidate repos: you
+cannot query *by* `repo_id`. With no candidates, search the forge for a distinctive path segment from
+the edge, e.g. on GitHub:
 
 ```bash
 gh search code --owner <owner> "<distinctive-path-segment>" --limit 20 --json repository,path

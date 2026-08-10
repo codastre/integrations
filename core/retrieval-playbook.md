@@ -179,14 +179,19 @@ A QUERY result is a **locator**: repo, path, line range, and `blob_sha`. When th
 `snippet`, the content must be fetched before it can be quoted. Adapters compile this into their own
 fetch/read primitives; the rules below are agent-neutral.
 
-**Diagnose before acting** — read `repos[repo_id].masking_scheme`:
+**A snippet is hydrated exactly when a local checkout is known for that result's repo.** Hydration
+reads the file from disk; the root is resolved per repo (the repo the CLI runs inside, or one recorded
+in the checkout registry). Masking scheme does **not** decide it — cleartext repos hydrate given a
+checkout. So on a large tenant most federated hits arrive snippet-less simply because those repos
+aren't cloned, and obtaining a checkout *does* make snippets appear on the next call.
 
-- `none` (cleartext): hydration is gated on an unmasking step cleartext repos skip, so a missing
-  snippet is *expected*, not a misconfiguration. Fetch the source.
-- `hmac` with a `path_token` and no `real_path`/`snippet`: the config is talking to the raw HTTP
-  endpoint instead of the local proxy. Fix the setup — that's the actual cause.
+Where the proxy reports a reason, branch on it rather than inferring: no-checkout (clone, or read via
+the forge API), file-absent-in-checkout (fetch — indexed at a ref the tree lacks), read-error. Absent
+reason and absent snippet means an older proxy; fall back to the rule above.
 
-Obtaining a checkout does **not** make snippets appear on a `none` repo; it yields files to read.
+The one genuine misconfiguration: an `hmac` repo returning a `path_token` with no `real_path` means
+the config is talking to the raw HTTP endpoint instead of the local proxy. Fix that at the source.
+
 GRAPH needs no source at all, so never fetch source for a purely structural question.
 
 **Never read a returned path directly.** `real_path`/`path_token` are repo-relative with **no repo
@@ -195,10 +200,12 @@ machine shared an `internal/infra/kafka/` tree). Resolving against the wrong rep
 plausible, wrong file **with no error** — the worst failure mode. Resolve the repo first, from
 `repos[repo_id].remote_url`.
 
-**Resolving a repo behind a GRAPH edge is harder than behind a QUERY hit.** GRAPH's `repos` map carries
-no `remote_url`, and there is no way to query *by* `repo_id`, so the "one cheap QUERY per repo" method
-only works when candidate repos are already known. With no candidates, search the forge for a
-distinctive path segment from the edge.
+**Resolving a repo behind a GRAPH edge can be harder than behind a QUERY hit.** The server's GRAPH
+`repos` map carries no `remote_url`, so check whether the proxy backfilled one — when it did, the edge
+already names both services. When it didn't, there is no way to query *by* `repo_id`, so the "one cheap
+QUERY per repo" method only works when candidate repos are already known; with no candidates, search
+the forge for a distinctive path segment from the edge. Never infer a service from a shared path like
+`app/consumer.py`.
 
 **The CLI already tracks local checkouts.** `checkouts.json` in the CLI's config directory maps
 `remote_url` → absolute local path, keyed in the same format QUERY returns, and is the mechanism behind
