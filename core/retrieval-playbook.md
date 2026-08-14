@@ -172,3 +172,63 @@ handler details. Each hop is one small ranked call instead of cloning and greppi
 - Symbol not found in GRAPH → names must match the indexed definition; run QUERY to recover the exact
   symbol name, then re-seed.
 - Literal strings, unindexed/uncommitted files → text search is the right tool; say so plainly.
+
+## 12. Fetching source when a result has no snippet
+
+A QUERY result is a **locator**: repo, path, line range, and `blob_sha`. When the response carries no
+`snippet`, the content must be fetched before it can be quoted. Adapters compile this into their own
+fetch/read primitives; the rules below are agent-neutral.
+
+**A snippet is hydrated exactly when a local checkout is known for that result's repo.** Hydration
+reads the file from disk; the root is resolved per repo (the repo the CLI runs inside, or one recorded
+in the checkout registry). Masking scheme does **not** decide it — cleartext repos hydrate given a
+checkout. So on a large tenant most federated hits arrive snippet-less simply because those repos
+aren't cloned, and obtaining a checkout *does* make snippets appear on the next call.
+
+Where the proxy reports a reason, branch on it rather than inferring: no-checkout (clone, or read via
+the forge API), file-absent-in-checkout (fetch — indexed at a ref the tree lacks), read-error. Absent
+reason and absent snippet means an older proxy; fall back to the rule above.
+
+The one genuine misconfiguration: an `hmac` repo returning a `path_token` with no `real_path` means
+the config is talking to the raw HTTP endpoint instead of the local proxy. Fix that at the source.
+
+GRAPH needs no source at all, so never fetch source for a purely structural question.
+
+**Never read a returned path directly.** `real_path`/`path_token` are repo-relative with **no repo
+prefix**, and such paths collide across repos in any large tenant (measured: 13 checkouts on one
+machine shared an `internal/infra/kafka/` tree). Resolving against the wrong repo root yields a real,
+plausible, wrong file **with no error** — the worst failure mode. Resolve the repo first, from
+`repos[repo_id].remote_url`.
+
+**Resolving a repo behind a GRAPH edge can be harder than behind a QUERY hit.** The server's GRAPH
+`repos` map carries no `remote_url`, so check whether the proxy backfilled one — when it did, the edge
+already names both services. When it didn't, there is no way to query *by* `repo_id`, so the "one cheap
+QUERY per repo" method only works when candidate repos are already known; with no candidates, search
+the forge for a distinctive path segment from the edge. Never infer a service from a shared path like
+`app/consumer.py`.
+
+**The CLI already tracks local checkouts.** `checkouts.json` in the CLI's config directory maps
+`remote_url` → absolute local path, keyed in the same format QUERY returns, and is the mechanism behind
+the `--repo-path` flag. Consult it before guessing a directory. It is **not exhaustive** — it lists only
+checkouts the CLI has seen — so also probe the clone root on disk, or you will re-clone every session.
+
+**Prefer a single-file fetch over a clone** for one to three files — that fetches one file's contents
+and touches no disk. Clone only for genuine exploration (grep, following imports); a clone brings the
+**whole repo at one commit**, not a file: blobless and shallow, so all paths are present with blob
+bytes on demand and no history (measured on a mid-size service: 1483 files, 1 commit, ~4 s, 16 MB on
+disk against 29 MB server-side for full history).
+
+When cloning, derive the root from existing checkout-registry entries when possible (their common
+parent is the machine's convention), else default to a `checkouts/` tree beside the CLI's own config,
+creating that root — it does not exist on a fresh machine. **Keep every root's layout flat,
+`<root>/<repo>`**, so a single probe finds a clone under any of them; a nested `<host>/<owner>/`
+layout makes the probe miss clones and re-clone each session. Same-named repos from different orgs
+then collide — give the second an explicit root rather than reintroducing nesting. Never clone into
+the current repo's tree.
+
+**Verify `blob_sha` before quoting — always.** Compare the result's `blob_sha` against the checkout's
+blob hash for that path. One check catches both wrong-repo and stale-index at once. On mismatch, don't
+trust `line_start`: locate the symbol by name and say the index is behind. `stale: true` and
+`freshness: "syncing"`/`"degraded"` are corroborating signals.
+
+**Cite with the repo name.** A bare path is ambiguous across a multi-repo tenant.
