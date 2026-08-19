@@ -1,6 +1,6 @@
 ---
 description: Check Codastre connectivity, auth, and index status
-allowed-tools: Bash(command -v codastre:*), Bash(codastre doctor:*), mcp__plugin_codastre_codastre__QUERY, mcp__codastre__QUERY
+allowed-tools: Bash(command -v codastre:*), Bash(codastre doctor:*), Bash(codastre version:*), mcp__plugin_codastre_codastre__QUERY, mcp__codastre__QUERY
 ---
 
 **Do NOT invoke skills or other commands. Run the checks below directly and report.**
@@ -8,6 +8,7 @@ allowed-tools: Bash(command -v codastre:*), Bash(codastre doctor:*), mcp__plugin
 0. First confirm the CLI is installed: run `command -v codastre` via Bash. If it prints nothing (non-zero exit), the `codastre` binary is not on PATH — stop here and report per the "binary not found" row below (the MCP server runs `codastre serve`, so nothing else will work until it's installed). Otherwise continue.
 1. Run `codastre doctor` via Bash. Exit code 0 = all checks pass, 2 = warnings only, 1 = at least one error.
 2. If doctor passes, smoke-test retrieval: call the Codastre `QUERY` MCP tool with `query_text: "main entry point"`, `top_k: 1` (use whichever QUERY tool name is available: `mcp__plugin_codastre_codastre__QUERY` or `mcp__codastre__QUERY`).
+3. Report the **retrieval plane**: run `codastre version`. v0.14.0+ means the CLI plane can render and hydrate (`--format agent` / `--snippets`), which is where this client reaches the cheap format rung; anything older means MCP `verbose` only. Say which, in one line, and — only when it's older — that updating the CLI recovers roughly a third of the tokens per hydrated call. Don't guess an install channel.
 
 Report briefly:
 
@@ -18,6 +19,7 @@ Report briefly:
 | Symptom | Guidance |
 |---|---|
 | `codastre` binary not found | Install the Codastre CLI, then `codastre login` |
+| `codastre version` older than v0.14.0 | CLI plane can't render or hydrate — MCP `verbose` only; updating the CLI restores the cheap rung |
 | doctor reports no API key | Run `codastre login [--server URL]` |
 | `RETRIEVAL_UNAVAILABLE` | Data plane down — control plane reachable; retry later, use Grep meanwhile |
 | `REPO_NOT_INDEXED` | Call the `REGISTER` MCP tool with this repo's URL |

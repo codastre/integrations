@@ -2,7 +2,8 @@
 
 // PreToolUse enforcement for the live "search mode" (/codastre:mode).
 //   mode = codastre → block text search (Grep/Glob/Bash-search); allow QUERY/GRAPH
-//   mode = grep     → block Codastre QUERY/GRAPH; allow text search
+//   mode = grep     → block Codastre on both planes (QUERY/GRAPH and the
+//                     `codastre query|graph` CLI); allow text search
 //   mode = auto     → QUERY/GRAPH always allowed; text search allowed only AFTER
 //                     a Codastre attempt this turn (or immediately if Codastre
 //                     errored) — codastre-first with a disciplined fallback
@@ -16,6 +17,7 @@ const {
 	readMode,
 	readStdinJson,
 	isBashSearch,
+	codastreCliCall,
 	CODASTRE_TOOL,
 	readRunMarker,
 } = require('./lib');
@@ -23,7 +25,14 @@ const {
 function classOf(toolName, toolInput) {
 	if (CODASTRE_TOOL.test(toolName)) return 'codastre';
 	if (toolName === 'Grep' || toolName === 'Glob') return 'text-search';
-	if (toolName === 'Bash' && isBashSearch(toolInput.command || '')) return 'text-search';
+	if (toolName === 'Bash') {
+		const command = toolInput.command || '';
+		// The CLI plane is Codastre, and it is tested FIRST: `codastre query …`
+		// piped into grep would otherwise read as a text search and be blocked in
+		// the very mode that asks for Codastre.
+		if (codastreCliCall(command)) return 'codastre';
+		if (isBashSearch(command)) return 'text-search';
+	}
 	return null;
 }
 
@@ -59,8 +68,9 @@ async function main() {
 		);
 	} else if (mode === 'grep' && cls === 'codastre') {
 		deny(
-			'Codastre-free mode is ON (/codastre:mode). The Codastre QUERY/GRAPH tools are blocked for this ' +
-				'A/B run — answer with Grep/Glob and Bash search (grep/rg/find) plus Read. ' +
+			'Codastre-free mode is ON (/codastre:mode). Codastre is blocked for this A/B run on BOTH planes — ' +
+				'the QUERY/GRAPH MCP tools and the `codastre query` / `codastre graph` CLI. ' +
+				'Answer with Grep/Glob and Bash search (grep/rg/find) plus Read. ' +
 				'Switch with `/codastre:mode codastre` or turn it off with `/codastre:mode off`.'
 		);
 	} else if (mode === 'auto' && cls === 'text-search') {
@@ -72,7 +82,8 @@ async function main() {
 		// Otherwise, nudge Codastre-first — but softly, and re-running the exact
 		// search after one QUERY attempt (or a failure) will pass.
 		deny(
-			'Codastre-first (auto) mode is ON (/codastre:mode auto). Try one Codastre QUERY/GRAPH first. ' +
+			'Codastre-first (auto) mode is ON (/codastre:mode auto). Try one Codastre retrieval call first — ' +
+				'the QUERY/GRAPH tool, or `codastre query|graph --format agent` on the CLI plane; either counts. ' +
 				'If it fails or is unavailable, returns nothing on a genuinely literal string, the target is an ' +
 				'uncommitted/unindexed file, or the ranking stays flat after one reshape — re-run this exact ' +
 				'search and it will be allowed (say briefly why you fell back). Turn it off with `/codastre:mode off`.'

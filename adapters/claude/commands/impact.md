@@ -14,7 +14,7 @@ Arguments: `$ARGUMENTS` (free text = symbol; `--depth <n>`, default 2, max 3)
 
 Report:
 
-1. **Symbol** — name and defining location(s) (`real_path:line`).
+1. **Symbol** — name and defining location(s) (`real_path`, plus `:line` only when an edge's `evidence` already supplies it — do not Read caller files to manufacture line numbers; GRAPH ranges are chunk-granular).
 2. **Risk** — Low (< 5 confident inbound edges, single repo) / Medium (5–15, or any cross-repo edge) / High (> 15, or a public boundary), with a one-sentence rationale.
 3. **Will break** — inbound edges with confidence ≥ 0.9, grouped by repo.
 4. **Verify** — 0.5–0.9 edges.

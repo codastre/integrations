@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
-const { codastreConfigured, cliInstalled, readStdinJson } = require('./lib');
+const { codastreConfigured, cliInstalled, cliCapabilities, readStdinJson } = require('./lib');
 
 const hookEventName = process.argv[2];
 
@@ -21,6 +21,43 @@ const INSTALL_HINT =
 
 const LOGIN_HINT =
 	'SETUP NOTICE — proactively tell the user (concisely, once): the `codastre` CLI is installed but not authenticated. Run `codastre login [--server URL]` to store an API key, then `/codastre:status` to verify. Until then the Codastre QUERY/GRAPH tools will fail.';
+
+// Which plane this session should reach the format ladder on, resolved locally so
+// the model never spends a call probing it. Claude Code prefers
+// `structuredContent` when both representations are present, and `format:
+// "agent"` deliberately puts the payload only in `content[0].text` — so over MCP
+// the rendering is discarded and the model sees a fixed summary. The rendering is
+// still reachable through the CLI, but only on a binary new enough to have the
+// flags. See core/retrieval-playbook.md 2c.
+function planeLine() {
+	const caps = cliCapabilities();
+	if (!caps || !caps.available) return '';
+	const version = caps.version && caps.version !== 'unknown' ? ` (${caps.version})` : '';
+
+	if (caps.hydrate && caps.agentFormat) {
+		return (
+			' FORMAT LADDER — USE THE CLI PLANE: this client discards an MCP `agent` rendering (it prefers ' +
+			'`structuredContent`, where that rung carries only a fixed summary), so do not ask QUERY/GRAPH for ' +
+			`format="agent" — it returns no results. The installed codastre CLI${version} can render and hydrate, ` +
+			'so take the cheap rung through Bash instead: `codastre query "<code vocabulary>" --top-k 6 ' +
+			'[--language X] [--path-prefix P] --format agent --snippets` and `codastre graph <seed> --direction ' +
+			'<inbound|outbound|both> --format agent`. Measured against MCP verbose on one pinned result set: ' +
+			'−32% tokens with bodies on, −79% for locations-only. Two traps: **the CLI defaults bodies OFF**, so ' +
+			'pass --snippets for ordinary "where is X / what does X do" and omit it only when the ranking is the ' +
+			'answer; and run inside the repo checkout (or pass --repo-url/--repo-path) so paths resolve and ' +
+			'bodies hydrate. Stay on the QUERY/GRAPH tools when Bash is unavailable, for REGISTER, or when you ' +
+			'need the raw JSON envelope.'
+		);
+	}
+	return (
+		' FORMAT LADDER — MCP `verbose` ONLY: this client discards an MCP `agent` rendering, and the installed ' +
+		`codastre CLI${version} predates the CLI plane's \`--format agent\` / \`--snippets\` (both added in ` +
+		'v0.14.0), so neither plane can deliver the cheap rung. Use format="verbose" on QUERY/GRAPH and do not ' +
+		'attempt format="agent". Tell the user ONCE, in one line, that updating the codastre CLI would cut ' +
+		'roughly a third of the tokens per hydrated retrieval call — and let them choose how to update it ' +
+		'(do not guess a package name or run an installer).'
+	);
+}
 
 const PRETOOL_NUDGE =
 	'Consider the Codastre QUERY tool before Grep/Glob for this search: for conceptual or identifier searches it returns ~10 ranked snippets instead of raw match dumps, with better relevance and far fewer tokens. Grep/Glob remain right for literal strings, unindexed files, or when Codastre is unavailable.';
@@ -83,12 +120,12 @@ async function main() {
 		// Speak even when unconfigured, but only to guide setup (install > login > ready).
 		if (!installed) emit(INSTALL_HINT);
 		else if (!configured) emit(LOGIN_HINT);
-		else emit(AWARENESS + autoScopeLine(data && data.cwd));
+		else emit(AWARENESS + autoScopeLine(data && data.cwd) + planeLine());
 	} else if (hookEventName === 'SubagentStart') {
 		// Subagents get awareness only when the tools actually work — never a setup nag.
 		if (installed && configured) {
 			const data = await readStdinJson();
-			emit(AWARENESS + autoScopeLine(data && data.cwd));
+			emit(AWARENESS + autoScopeLine(data && data.cwd) + planeLine());
 		}
 	} else if (hookEventName === 'PreToolUse') {
 		// Only nudge toward QUERY when it can actually serve the request, and only
