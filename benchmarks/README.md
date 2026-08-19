@@ -47,9 +47,11 @@ repos referenced in `cases.json`, and `rg` **or** `grep` on PATH (falls back to 
   granularity, because Codastre returns chunk spans (e.g. `app/events.py:0-12`) while
   grep returns exact lines; both legitimately "find the file". The `expected` key still
   records the true line so containment can be checked.
-- **Tokens** = result-bytes / 4, the comparable cost of ingesting each tool's output
-  (matches the `codastre-token-audit` skill). The Codastre figure is the raw `--json`
-  envelope; the `codastre serve` proxy inlines snippets on top of this — not added here.
+- **Tokens** = result-bytes divided by a ratio chosen for the payload's *shape* — ~2.5 for a
+  JSON envelope, ~3.0 for the `agent` rendering, 4 for grep output (see the caveats below and
+  `core/measurement.md`). It is the comparable cost of ingesting each tool's output. Codastre
+  is reported at two rungs, `agent` and `json`; the `codastre serve` proxy inlines snippets on
+  top of either — not added here.
 
 ## Adding a case
 
@@ -69,7 +71,36 @@ The shipped cases deliberately span both tools and both outcomes: cross-repo GRA
 - Tier A scores a *fixed* recipe, not an agent's choices — it can't reward Codastre's
   "one call answers it" ergonomics beyond the call/byte counts, nor penalize grep's
   follow-up `Read`s (which it doesn't run). It measures the tools, not the workflow.
-- Token figures are chars/4 estimates, not tokenizer-exact.
+- Token figures are estimates, not tokenizer-exact, and the ratio depends on the payload's
+  shape: the Codastre side's JSON envelope is counted at ~2.5 chars/token (measured with
+  `cl100k_base`, range 2.38–2.69), the grep side's raw output at 4 — which was **never
+  measured** and is the prose default. Say so when reporting. A single flat 4 across both,
+  which this harness used previously, understated Codastre's tokens by ~37% while leaving
+  grep's roughly alone — i.e. it flattered Codastre in its own benchmark, so figures from
+  before that fix are not comparable to figures after it.
+- The Codastre side is priced at **two rungs of the `format` ladder**, and the report labels
+  which is which. `codastre (agent)` is `--format agent` — the text rendering, the cheapest
+  rung a caller can reach, and the headline figure. `codastre (json)` is raw `--json`, the
+  most verbose rung and an upper bound. Same query and same ranking, so both rows carry the
+  same precision/recall; only the encoding differs.
+  - **Which rung you quote can flip the verdict**, so quoting one unlabelled is the mistake to
+    avoid. On a single-repo smoke case the same QUERY measured ~1,060 tokens at `json` — a
+    *loss* against grep's ~680 — and ~190 at `agent`, a 3.5× win. Reporting only `json` had
+    Codastre losing a comparison it wins at the rung an agent actually uses.
+  - Locations are parsed from the `--json` call **only**, so nothing about the rendering can
+    move a precision or recall number.
+  - The two figures come from **two adjacent invocations**, not one envelope rendered twice —
+    the CLI cannot re-render a saved envelope. That is pinning by adjacency (see
+    `core/measurement.md`, rule 2), so a moving index can put the two rungs on slightly
+    different result sets. Deterministic fixtures make that unlikely, not impossible.
+  - The extra invocation is **not** added to the call count: a caller picks one rung, and
+    counting the harness's own double-measurement would report it as workflow cost.
+  - On a binary that doesn't advertise `--format agent`, the report says the rung was
+    unavailable rather than quoting a saving it couldn't ask for. Same if a rendering fails
+    mid-run — the column collapses rather than summing part of the calls, which would read as
+    a saving.
+  - Neither figure includes proxy-hydrated snippet bodies, which this harness still doesn't
+    add, so both understate a bodies-on call.
 - On a tiny, clean corpus grep stays competitive on absolute bytes for literal-string
   questions; Codastre's margin grows with corpus size, repo count, and cross-repo
   structure. Don't generalize a 4-repo result to a monorepo — report the corpus scale.

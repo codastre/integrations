@@ -56,7 +56,27 @@ function loadRecords(sinceIso, sessionId) {
 	return out;
 }
 
-const LABEL = { codastre: 'Codastre (QUERY/GRAPH)', 'text-search': 'Text search (grep/glob)', read: 'File reads' };
+// Codastre rows are split by plane, because the two are not interchangeable in a
+// receipt: the CLI plane carries one copy of the payload and reaches the `agent`
+// rung that a structuredContent-preferring client swallows over MCP. A receipt
+// that merged them would hide which plane produced the number.
+const LABEL = {
+	codastre: 'Codastre (QUERY/GRAPH)',
+	'codastre:mcp': 'Codastre (MCP QUERY/GRAPH)',
+	'codastre:cli': 'Codastre (CLI plane)',
+	'text-search': 'Text search (grep/glob)',
+	read: 'File reads',
+};
+
+// Records written before the plane field existed carry no plane and stay under
+// the plain `codastre` label rather than being guessed into one of the two.
+function groupKeyOf(record) {
+	const cls = record.class || 'other';
+	if (cls === 'codastre' && (record.plane === 'cli' || record.plane === 'mcp')) {
+		return `codastre:${record.plane}`;
+	}
+	return cls;
+}
 
 function main() {
 	const sessionId = (process.argv[2] || '').trim();
@@ -82,13 +102,17 @@ function main() {
 	}
 
 	const groups = {};
+	const bases = new Set();
 	let total = 0;
 	for (const r of records) {
-		const cls = r.class || 'other';
+		const cls = groupKeyOf(r);
 		groups[cls] = groups[cls] || { calls: 0, tokens: 0 };
 		groups[cls].calls += 1;
 		groups[cls].tokens += r.out_tokens || 0;
 		total += r.out_tokens || 0;
+		// Records predating tok_basis were written with the old flat divisor,
+		// which is what `text` now means.
+		bases.add(r.tok_basis || 'text');
 	}
 
 	const rows = Object.keys(groups)
@@ -103,9 +127,25 @@ function main() {
 			modeLine,
 			...rows,
 			`  ${'TOTAL'.padEnd(26)} ${String(records.length).padStart(3)} calls   ~${total.toLocaleString()} tok`,
-			'(result-size estimate, ~4 chars/token; reasoning tokens not included)',
+			basisCaveat(bases),
 		].join('\n')
 	);
+}
+
+// basisCaveat names the ratios this receipt actually used, rather than quoting
+// one figure for a mixed sum. The ratios and where they come from are in
+// core/measurement.md; `text` is the unmeasured prose default and says so,
+// because a receipt that presents it beside the measured two implies a standing
+// it does not have.
+const BASIS_LABEL = {
+	json: 'JSON ~2.5 ch/tok',
+	agent: 'agent text ~3.0',
+	text: 'other ~4 (unmeasured)',
+};
+
+function basisCaveat(bases) {
+	const used = ['json', 'agent', 'text'].filter((b) => bases.has(b)).map((b) => BASIS_LABEL[b]);
+	return `(result-size estimate — ${used.join('; ')}; ±20%, reasoning tokens not included)`;
 }
 
 main();
