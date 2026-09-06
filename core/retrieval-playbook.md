@@ -713,8 +713,11 @@ then collide — give the second an explicit root rather than reintroducing nest
 the current repo's tree.
 
 **Verify `blob_sha` before quoting — always.** Compare the result's `blob_sha` against the checkout's
-blob hash for that path. One check catches both wrong-repo and stale-index at once. On mismatch, don't
-trust `line_start`: locate the symbol by name and say the index is behind. `stale: true` and
-`freshness: "syncing"`/`"degraded"` are corroborating signals.
+blob hash for that path, **by prefix, never by equality** (§4): outside the `verbose` default the sha
+arrives abbreviated to 12 hex, so an equality check against a full 40-hex hash marks every file
+stale — put both sides in the same form (`git rev-parse --short=12`) before comparing. One check
+catches both wrong-repo and stale-index at once. On mismatch, don't trust `line_start`: locate the
+symbol by name and say the index is behind. `stale: true` and `freshness: "syncing"`/`"degraded"`
+are corroborating signals.
 
 **Cite with the repo name.** A bare path is ambiguous across a multi-repo tenant.

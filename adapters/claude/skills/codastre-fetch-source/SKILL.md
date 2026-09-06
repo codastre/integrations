@@ -175,8 +175,15 @@ Every result carries `blob_sha`, the git blob hash of the indexed file. Check it
 catches **both** failure modes: wrong repo (the collision above) and a stale index.
 
 ```bash
-git -C <checkout> rev-parse "HEAD:<real_path>"     # must equal the result's blob_sha
+git -C <checkout> rev-parse --short=12 "HEAD:<real_path>"   # compare against the result's blob_sha
 ```
+
+**Compare by prefix, never by equality** — the normative comparison, not a display concession
+(playbook §4). Only `verbose`, the default, carries the full 40-hex `blob_sha`: `compact` sends 12
+hex chars and `--format agent` prints the same 12, so comparing an abbreviated sha for equality
+against a full hash marks **every** file stale. `--short=12` puts both sides in the same form
+whichever rung returned the hit; when you are holding a full 40-hex sha and want the strictest
+check, drop `--short=12` and compare in full.
 
 - **Match** → you are reading exactly what was indexed. Cite `real_path:line_start` with confidence.
 - **Mismatch** → the file changed since indexing, or you're in the wrong repo. Re-check step 1; if the
