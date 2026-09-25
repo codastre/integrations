@@ -1,6 +1,6 @@
 {
 	"name": "codastre",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Topology-aware hybrid code search and cross-repo knowledge graph for Claude Code — fewer tokens, better hits than grep.",
 	"author": {
 		"name": "Codastre"
