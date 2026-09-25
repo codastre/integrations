@@ -26,14 +26,15 @@ A bare symbol with no directional wording gets `both` — outbound alone silentl
 
 If the seed symbol returns no edges, run a Codastre `QUERY` for it to recover the exact indexed symbol name, then retry GRAPH once with that name. If the QUERY hit has no `symbol_name`, re-seed on its `seed:<chunk_id>` instead — a chunk id traverses directly and can't mis-match a same-named symbol in another file or repo.
 
-**Ask for the `agent` rung, and ask for it on the CLI plane.** GRAPH carries no bodies, so per-edge overhead is the whole response and a fan-out repeats its source file's path on every edge; the agent rendering groups edges under their source file and names the destination repo only when the edge crosses a boundary. Measured on a deployed 8-edge traversal, 4,743 → 1,785 B (−62%) — one run, so read it to the nearest few points. There is no `snippets` knob here, so `format` is the whole lever — and no hydration question either, which makes the CLI gate a single version check:
+**Ask for the `agent` rung.** GRAPH carries no bodies, so per-edge overhead is the whole response and a fan-out repeats its source file's path on every edge; the agent rendering groups edges under their source file and names the destination repo only when the edge crosses a boundary. Measured on a deployed 8-edge traversal, 4,743 → 1,785 B (−62%) — one run, so read it to the nearest few points. There is no `snippets` knob here, so `format` is the whole lever — and no hydration question either, so once both planes can render they hand the model the same edges at about the same cost (−82% vs verbose, measured server-side). The gate is a single version check:
 
 ```bash
-codastre version                                               # v0.14.0+ has --format agent
-codastre graph "<seed>" --direction <dir> [--depth N] [--kind K] [--repo-url URL|--all] --format agent
+codastre version   # v0.18.0+ → either plane. v0.14.0–v0.17.x → CLI plane only. Older → MCP verbose.
+codastre graph "<seed>" --direction <dir> [--depth N] [--kind K] [--repo-url URL|--all] --format agent \
+  --client claude-code-plugin/0.2.0   # --client needs v0.19.0; drop it on an older binary
 ```
 
-Claude Code prefers `structuredContent` over `content` when both are present, and the `agent` rung puts the edges in `content[0].text` with only a fixed summary (`format`, `status`, `freshness`, `edge_count`, `rendering_in`) in `structuredContent` — so over MCP it shows the summary and no edges (verified 2026-08-18). That's deterministic: don't spend a call probing it. On a binary older than v0.14.0 (or with no Bash / no CLI / not logged in), use the MCP tool at `format: "verbose"` and say once that the rung needs v0.14.0+ — don't claim a saving you couldn't ask for, and don't repeat the notice.
+On v0.18.0+ MCP `format: "agent"` works too: the rendering rides in `structuredContent.rendering` as well as `content[0].text`. On v0.14.0–v0.17.x it does not — Claude Code prefers `structuredContent`, which there holds only a fixed summary (`format`, `status`, `freshness`, `edge_count`, `rendering_in`), so over MCP it shows no edges (verified 2026-08-18). That's deterministic: don't spend a call probing it — use the CLI on those binaries. On a binary older than v0.14.0 (or with no Bash / no CLI / not logged in), use the MCP tool at `format: "verbose"` and say once that the rung needs v0.14.0+ — don't claim a saving you couldn't ask for, and don't repeat the notice.
 
 Present edges grouped by kind, then by confidence:
 
@@ -41,5 +42,6 @@ Present edges grouped by kind, then by confidence:
 - **Report at file granularity; do not Read caller files to recover exact call lines.** Edge line ranges span the whole chunk (often the entire file), and GRAPH carries no snippets — file + symbol + confidence is the complete answer here. If exact lines are genuinely required, use one repo-scoped QUERY for the symbol rather than one Read per caller.
 - **Confidence ≥ 0.9**: state as fact. **0.5–0.9**: "likely". **< 0.5** or `resolution: "dynamic_unresolved"`: list under a separate "Hypotheses (unverified)" heading — never mix them with confirmed edges.
 - For `--topic`: label src as producers, dst as consumers, grouped per repo.
+- If the question is really fleet-wide — "which topics have no consumer", "which routes does nothing call" — that's `/codastre:contracts`, not a traversal.
 
 End with a one-sentence structural takeaway (e.g. "3 services consume this topic; the highest-confidence in-repo caller is X").

@@ -1,6 +1,6 @@
 ---
 description: Search indexed repos with Codastre hybrid retrieval
-argument-hint: <query> [--repo URL] [--path PREFIX] [--lang X] [--top-k N] [--max-snippet-lines N] [--no-snippets]
+argument-hint: <query> [--repo URL] [--path PREFIX] [--lang X] [--stacks S] [--top-k N] [--max-snippet-lines N] [--no-snippets]
 allowed-tools: Bash(codastre:*), mcp__plugin_codastre_codastre__QUERY, mcp__codastre__QUERY, Read
 ---
 
@@ -11,42 +11,57 @@ scoping, phrasing, how to read the response — is identical on both planes, fla
 
 Arguments: `$ARGUMENTS`
 
-Parse the arguments: the free text is `query_text`; `--repo <url>` → `repo_url`, `--lang <x>` → `language`, `--path <prefix>` → `path_prefix`, `--top-k <n>` → `top_k`, `--max-snippet-lines <n>` → `max_snippet_lines`, `--no-snippets` → `snippets: false`. With no `--repo`, search federated (omit `index_id` and `repo_url`) so every visible repo is covered.
+Parse the arguments: the free text is `query_text`; `--repo <url>` → `repo_url`, `--lang <x>` → `language`, `--path <prefix>` → `path_prefix`, `--top-k <n>` → `top_k`, `--max-snippet-lines <n>` → `max_snippet_lines`, `--no-snippets` → `snippets: false`, `--stacks <a,b>` → `stacks: ["a", "b"]`. With no `--repo`, search federated (omit `index_id` and `repo_url`) so every visible repo is covered.
+
+**The input is a ticket, an incident, or a feature description rather than code vocabulary, and no `--repo` was given?** Then the question is *which repo*, not *which chunk* — run `/codastre:corpora` (or follow the `codastre-corpus-routing` skill) first and come back here scoped to the winner. A federated QUERY on ticket prose is how one lucky chunk in support tooling outranks the service that owns the behaviour.
+
+**`--stacks`** (CLI v0.18.1+) narrows a federated search to repos assigned those technical stacks — `web`, `backend`, `mobile` (covers `android` and `ios`), `android`, `ios`, `data-engineering`, `ml-engineering`, `security`, `low-code`, `infrastructure` — and prunes candidates *before* retrieval. **Unassigned repos match no stack filter**, and most repos aren't classified yet: if a stack-filtered search returns `ok` with no hits, re-run it once without `--stacks` and tell the user the empty answer was the filter, not the code. Pass it only when the user names a stack ("in the iOS app", "backend only"); never add one on your own.
 
 **When `--top-k` is not given, pass `top_k: 6`, not the tool default of 10.** Every hit is a fully hydrated snippet you pay for whether or not it's read, and for a "where is X" question the answer is almost always in the top 3. Use 10+ only when the user asks to explore or survey.
 
 `--max-snippet-lines` / `--no-snippets` are handled by the local `codastre serve` proxy and stripped before the request reaches the server, so they are safe to pass and no-ops against a direct-HTTP setup. Use them when the user wants locations rather than code (`--no-snippets` reports `hydration: "snippets_disabled"` per hit) — not for ordinary lookups, where the inline snippet is the point.
 
-**When you pass `--no-snippets`, ask for the `agent` rendering with it — on whichever plane the next section names** (`--format agent` on the CLI, where bodies are already off; `format: "agent"` over MCP only on a client that doesn't swallow it). The pair is the *locate tier*, and either half alone leaves most of its saving unclaimed. `snippets: false` on its own still ships a JSON envelope whose per-hit overhead is the whole response once the bodies are gone. Measured at `top_k=5` the pair went 2,234 → 391 tokens (−82%) on the MCP plane and 1,026 → 216 tokens (−79%) CLI-vs-MCP-verbose; with bodies on the ladder saves far less (−32%, same measurement), so don't quote a bodies-on figure as if it were the headline. Which plane carries the rung is the next section's question — on the CLI it's `--format agent` (bodies already off), and over MCP an absent `format` in the advertised `inputSchema` means an out-of-date binary, in which case run without it and say the rung wasn't available rather than claiming the saving.
+**When you pass `--no-snippets`, ask for the `agent` rendering with it — on whichever plane the next section names** (`--format agent` on the CLI, where bodies are already off; `format: "agent"` over MCP on v0.18.0+). The pair is the *locate tier*, and either half alone leaves most of its saving unclaimed. `snippets: false` on its own still ships a JSON envelope whose per-hit overhead is the whole response once the bodies are gone. Measured at `top_k=5` the pair went 2,234 → 391 tokens (−82%) on the MCP plane and 1,026 → 216 tokens (−79%) CLI-vs-MCP-verbose; with bodies on the ladder saves far less (−32%, same measurement), so don't quote a bodies-on figure as if it were the headline. Which plane carries the rung is the next section's question — on the CLI it's `--format agent` (bodies already off), and over MCP an absent `format` in the advertised `inputSchema` means an out-of-date binary, in which case run without it and say the rung wasn't available rather than claiming the saving.
 
-**Which plane: check the CLI first.** In `agent` format the payload sits in `content[0].text` while
-`structuredContent` holds only a fixed summary, so Claude Code — which prefers `structuredContent`
-when both are present — shows the model the summary and no results (verified 2026-08-18, `codastre`
-v0.14.0: the frame carried the rendering, the model didn't get it). It is deterministic, so don't
-spend a call probing it. Check the binary instead, once per session:
+**Which plane: check the CLI once per session** (the SessionStart context usually already says; if
+it does, don't re-run this):
 
 ```bash
-codastre version          # v0.14.0+ → CLI plane, hydrated. ≤ v0.13.1 → MCP verbose.
+codastre version   # v0.18.0+ → either plane. v0.14.0–v0.17.x → CLI plane. ≤ v0.13.1 → MCP verbose.
 ```
 
-- **v0.14.0+ → run the search on the CLI plane**, mapping the parsed arguments to flags:
-  ```bash
-  codastre query "<text>" --top-k 6 [--language X] [--path-prefix P] [--repo-url URL] \
-    --format agent --snippets [--max-snippet-lines N]
-  ```
-  **Pass `--snippets` unless `--no-snippets` was given** — the CLI's default is bodies *off*, the
-  opposite of QUERY's, and forgetting it silently downgrades an ordinary lookup to the locate tier.
-  With `--no-snippets`, just omit the flag (that *is* the locate tier). No `--repo` argument → omit
-  `--repo-url` inside a repo checkout (the CLI resolves it from the git remote) and pass `--all` when
-  the user asked for a federated search.
+- **v0.18.0+ → either plane works.** The server renders `agent` itself and ships the rendering in
+  both `content[0].text` and `structuredContent.rendering`, so MCP `format: "agent"` reaches the model
+  (verified 2026-09-23 on v0.19.1). Both planes then hand the model the same rendering — in context
+  within a few percent (the MCP copy arrives JSON-escaped: +4% on one measured 3-hit call) — so use
+  whichever is at hand. The CLI is only cheaper *on the wire*, where MCP ships the rendering twice.
+- **v0.14.0 – v0.17.x → run on the CLI plane.** On these binaries `agent` format puts the payload only
+  in `content[0].text` while `structuredContent` holds a fixed summary, so Claude Code — which prefers
+  `structuredContent` — shows the model the summary and no results (verified 2026-08-18, v0.14.0).
+  It is deterministic; don't spend a call probing it.
 - **≤ v0.13.1 → use the MCP tool with `format: "verbose"`**, and say once, in one line, that
   `--format agent` / `--snippets` landed in v0.14.0 so the ladder's saving isn't reachable on this
-  binary and updating `codastre` recovers it. Don't guess an install channel, don't run an installer,
-  and don't repeat the notice on later calls.
-- **No Bash, no CLI, or not logged in** → the MCP tool, same as above. Nothing else changes.
+  binary and updating `codastre` (v0.19.1 is current) recovers it. Don't guess an install channel,
+  don't run an installer, and don't repeat the notice on later calls.
+- **No Bash, no CLI, or not logged in** → the MCP tool. Nothing else changes.
+
+The CLI plane, mapping the parsed arguments to flags:
+
+```bash
+codastre query "<text>" --top-k 6 [--language X] [--path-prefix P] [--repo-url URL] [--stacks S] \
+  --format agent --snippets [--max-snippet-lines N] --client claude-code-plugin/0.2.0
+```
+
+**Pass `--snippets` unless `--no-snippets` was given** — the CLI's default is bodies *off*, the
+opposite of QUERY's, and forgetting it silently downgrades an ordinary lookup to the locate tier.
+With `--no-snippets`, just omit the flag (that *is* the locate tier). No `--repo` argument → omit
+`--repo-url` inside a repo checkout (the CLI resolves it from the git remote) and pass `--all` when
+the user asked for a federated search. `--client` attributes the call to this plugin in the server's
+audit log; it exists from v0.19.0, and an older binary rejects it as an unknown flag — drop it there.
+`--stacks` needs v0.18.1.
 
 Reading an `agent`-format response — on the CLI plane it is simply stdout (the `target: …` scope line
-goes to stderr); over MCP **the answer is in `content[0].text`**, not `structuredContent`, which carries only a fixed summary (`format`, `status`, `freshness`, `result_count`, `rendering_in`). `blob_sha` comes back abbreviated to 12 hex — **verify it by prefix, never equality**. A hit with no `symbol_name` prints `seed:<chunk_id>`; that is GRAPH's exact seed, so hand it to `/codastre:graph` verbatim rather than re-resolving the symbol by name.
+goes to stderr); over MCP read `rendering` — on v0.18.0+ it is in `structuredContent.rendering` as well as `content[0].text`; on older binaries **only** `content[0].text` has it and `structuredContent` is a fixed summary (`format`, `status`, `freshness`, `result_count`, `rendering_in`). `blob_sha` comes back abbreviated to 12 hex — **verify it by prefix, never equality**. A hit with no `symbol_name` prints `seed:<chunk_id>`; that is GRAPH's exact seed, so hand it to `/codastre:graph` verbatim rather than re-resolving the symbol by name.
 
 Phrase `query_text` in code vocabulary (identifiers, API names) rather than a full English question — it ranks better. If a federated search returns noisy results (top hits from unrelated repos, or all scores tiny and nearly equal), re-run scoped with `--repo` or `--path` rather than raising `--top-k`; on a large or mixed tenant, scoping is the fix, not more results.
 
@@ -63,6 +78,7 @@ Present the results compactly:
 - If a hit has `stale: true`, flag it and re-Read that range before quoting it.
 - If a hit has `snippet_truncated: true`, the body stops at `snippet_line_end` — quote only what you were given, and Read on from there only if the answer is visibly cut off.
 - If a hit has a `hydration` reason instead of a snippet, report the reason's remedy rather than the raw string (e.g. `no_local_checkout` → "that repo isn't cloned locally"); `snippets_disabled` is expected when `--no-snippets` was passed and needs no comment.
+- `results: []` with `status: "ok"` under `--stacks` → retry once without it before answering (see above).
 - `results: []` with `status: "ok"` → say "indexed corpus has no match" (that is an answer); suggest Grep only if the query looks like a literal string. On the CLI plane this is `0 hits` and exit 0 — same answer, not a failure.
 - `freshness: "syncing"` → note results may lag recent commits.
 - `RETRIEVAL_UNAVAILABLE` → say retrieval is down and offer a Grep fallback. On the CLI it arrives as an `error RETRIEVAL_UNAVAILABLE` line with a non-zero exit; `REPO_NOT_INDEXED` means the repo needs `REGISTER` (MCP only) first.

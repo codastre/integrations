@@ -114,13 +114,14 @@ same hits, same ranking, different packaging.
 |---|---|---|
 | `verbose` (default) | server | Every field, full width. What every caller gets unless it asks otherwise |
 | `compact` | server | Drops what a caller cannot act on — `chunk_id` where `symbol_name` can seed GRAPH instead, `content_kind` at `code`, `path_class` at `app`, GRAPH's `edge_id` unconditionally — abbreviates `blob_sha` to 12 hex, rounds `score` to 4 dp and `confidence` to 3 dp |
-| `agent` | local proxy | Renders the response as **text**: hits grouped by file so a path is written once per file rather than once per hit, bodies as source with real line numbers instead of JSON-escaped strings. Rewritten to `compact` on the wire, because the renderer reads nothing `compact` drops |
+| `agent` | server (v0.18.0+), or the local proxy when it can enrich | Renders the response as **text**: hits grouped by file so a path is written once per file rather than once per hit, bodies as source with real line numbers instead of JSON-escaped strings. Built from the `compact` shape, because the renderer reads nothing `compact` drops. The server's rendering prints masked paths as `[masked]` and carries no bodies; the proxy takes over when it can add real paths and bodies |
 
 Also reachable outside a per-call argument: `codastre serve --format agent`,
 `$CODASTRE_QUERY_FORMAT=agent` (for when the MCP config is not yours to edit), and
-`codastre query|graph --format agent` on the CLI. That last one is not a footnote: on a client that
-prefers `structuredContent` — Claude Code today — it is the **only** plane the rung arrives on, and
-therefore the default. See "While that stands: run the ladder on the CLI plane" below.
+`codastre query|graph|corpora|contracts --format agent` on the CLI. Which plane the rung arrives on
+depends on the CLI version — see "v0.18.0: the rendering reaches the model on both planes" below.
+`CORPUS_SEARCH` and `CONTRACTS` have no MCP `format` argument at all, so their agent rung exists only
+on the CLI.
 
 ### The locate tier: `format: "agent"` + `snippets: false`
 
@@ -183,14 +184,49 @@ Two consequences worth holding: `agent` works as soon as the proxy is new enough
 server does; and until the server ships `format`, the `compact` rung is absent from the enum
 precisely because it would promise a saving that never arrives.
 
-### The client can swallow the rendering — check before you rely on it
+### v0.18.0: the rendering reaches the model on both planes
+
+**On a `codastre` CLI v0.18.0 or newer, MCP `format: "agent"` works in Claude Code.** The server now
+renders `agent` itself and returns the rendering in **both** representations — `content[0].text` and
+`structuredContent.rendering` — alongside `format`, `status`, `freshness` and `result_count`. The
+proxy stopped rewriting `agent` → `compact` unconditionally: it forwards the argument and takes the
+rendering over only when it can enrich it (real paths, local bodies).
+
+Verified on 2026-09-23 against v0.19.1 through the plugin's own MCP server: a
+`format: "agent"` QUERY returned `{"format":"agent","rendering":"codastre · 2 hits …", …}`, where a
+v0.14.0 binary returned only `rendering_in: "content[0].text"`.
+
+What this changes:
+
+- **Plane choice stops mattering for cost in context.** Both planes hand the model the same
+  rendering; the MCP copy arrives JSON-escaped inside `structuredContent`, which measured **+4%** on
+  one 3-hit bodies-on call (4,319 B CLI stdout vs the same rendering escaped). The CLI is cheaper
+  only *on the wire*, where MCP ships the rendering twice (the server measured MCP `agent` at −21% vs
+  verbose on the wire with bodies on, −80% on the locate tier). Use whichever plane is at hand.
+- **Read `rendering`**, from `structuredContent` or `content[0].text` — they are the same string.
+- **Everything below this section, up to §3, applies to v0.14.0–v0.17.x only.** It is kept because
+  those binaries are still installed on some machines, and on them it is still exactly right.
+
+The version gate, in full:
+
+| `codastre version` | MCP `format: "agent"` in Claude Code | CLI `--format agent --snippets` | Use |
+|---|---|---|---|
+| v0.18.0+ | works | works | either plane |
+| v0.14.0 – v0.17.x | **returns no results** (summary only) | works | the CLI plane |
+| ≤ v0.13.1 | returns no results | not available | MCP `verbose` |
+
+A `dev` or unparsable version can't be placed on this table: treat it as v0.14.0–v0.17.x if
+`codastre query --help` lists `--snippets`, else as ≤ v0.13.1. The plugin's SessionStart hook does
+this resolution locally and states the result, so a session normally never needs to run the check.
+
+### The client can swallow the rendering (v0.14.0 – v0.17.x)
 
 **`agent` puts the payload in `content[0].text` and a fixed summary in `structuredContent`. An MCP
 client that prefers `structuredContent` when both are present therefore shows the model the summary
 and nothing else** — `status: "ok"`, a `result_count`, no results. The call succeeded, the proxy
 rendered correctly, and the model received none of it.
 
-Confirmed on 2026-08-18 against `codastre` v0.14.0 by driving `codastre serve` directly and
+Confirmed in one MCP client on 2026-08-18 against `codastre` v0.14.0 by driving `codastre serve` directly and
 comparing the JSON-RPC frame with what the client surfaced:
 
 | | raw MCP frame | what the model got |
@@ -212,7 +248,7 @@ entirely; in `agent` format the summary carries nothing a caller acts on (`forma
 rendering in it — would make the rung work on every client and shrink the frame further. Worth
 filing with the frame evidence above.
 
-### While that stands: run the ladder on the CLI plane
+### While that stands: run the ladder on the CLI plane (v0.14.0 – v0.17.x)
 
 Claude Code is the client that gets this wrong, and it is the primary one — so on Claude Code the MCP
 `agent` rung is not a saving to probe for, it is a call that returns nothing. **Don't spend a probe
@@ -267,8 +303,8 @@ once, name the version and the remedy, and don't repeat it:
 > installed it (Homebrew tap, release binary, or `go install` from a checkout) and re-run
 > `codastre version` to confirm.
 
-Never guess a package name or run an installer unasked — check the version first, and which channel
-installed the binary is the user's to say.
+Never guess a package name or run an installer unasked — `codastre version` is the check, and
+which channel installed the binary is the user's to say.
 
 Measured on 2026-08-18 against v0.14.0, `top_k=5`, one repo, both planes in one session over the
 **same five hits verified identical** — MCP frames captured by driving `codastre serve` over stdio,
@@ -300,11 +336,10 @@ about abandoning the tools:
 - **The CLI isn't installed, or isn't logged in.** `codastre doctor` says which.
 - **`REGISTER`** has no CLI equivalent (`codastre sync` covers SYNC), so indexing stays on MCP.
 - **A client that doesn't swallow the rendering.** Then MCP `agent` is the cheapest rung of all
-  (1,116 B at the locate tier, above) and the CLI detour buys nothing. This whole section is
-  contingent on a client behaviour — re-check it after a `codastre` release that omits the summary,
-  and delete the detour when it lands.
+  (1,116 B at the locate tier, above) and the CLI detour buys nothing. That fix landed in v0.18.0
+  (the server now carries the rendering in `structuredContent`) — see the section above.
 
-Both planes are now instrumented identically: `codastre query|graph` through Bash is logged as
+Both planes are now instrumented identically: `codastre query|graph|corpora|contracts` through Bash is logged as
 `class: "codastre"` with `plane: "cli"`, counts as the Codastre attempt that `auto` mode waits for,
 and is billed at the rendering's ratio — so a CLI-plane run shows up in `/codastre:tokens` and the
 receipt instead of reading as free.
@@ -348,6 +383,66 @@ Measured, adding `language` raised cost *per hit* ~30% precisely because it evic
 ranker backfilled with real code — and that run found both correct implementations with the fewest
 follow-up reads. Pass it whenever you want code rather than resources; skip it only when the resource
 files *are* the target (e.g. "which localization key holds this string").
+
+### Unknown owner: rank corpora before you search chunks
+
+Scoping assumes you know the repo. When all you have is **prose** — a ticket body, an incident
+summary, a feature description — you don't, and a federated QUERY is the wrong tool for finding out:
+it ranks *chunks*, so one lexically lucky chunk in a support-tooling repo (a helpdesk connector that
+literally says "customer", "declined", "reported") outranks the service that implements the
+behaviour, because nothing aggregates evidence per repo.
+
+`CORPUS_SEARCH` (MCP) / `codastre corpora "<text>"` (CLI, v0.15.0+) aggregates. It ranks **corpora**
+— git repos and document sets — on three signals and says which carried each result:
+
+| Signal | Reads as |
+|---|---|
+| `card_score` — the query matches the repo's identity card (name, description, topics, README, shape) | the text **names** this corpus |
+| `evidence_score` — how many of its chunks matched, and how high | the corpus **contains** what the text describes |
+| `diversity_score` — across how many distinct files | the match is spread, not one lucky file |
+
+Each result carries `why`: the files that put it there, as (path_token, line span). **The pairing is
+the recipe**: CORPUS_SEARCH to pick the corpus → QUERY with `repo_url` to find the code inside,
+re-phrased into code vocabulary. Skipping the first step on a ticket-shaped question is how an agent
+opens the wrong repo confidently.
+
+Reading it:
+
+- **Scores are ranks within one answer**, not similarities — not comparable across calls, and a top
+  result is not proof that anything fits. Pass `with_similarity=true` for `max_similarity` /
+  `mean_similarity`, the one number here that *is* comparable and can carry a "no confident owner"
+  floor.
+- `has_card: false` ("no card") → placed on body matches alone; weaker evidence.
+- A close top two, or a card-only win on prose that doesn't name the repo → say the routing is
+  uncertain rather than picking one.
+- `content_kinds` is an allow-list for **evidence only**; the identity-card leg is unaffected. Omit it
+  for discovery.
+- Default `top_k` is 10; 5 is plenty for routing. The CLI's `--format agent` is the cheap rendering —
+  over MCP the tool has no `format` argument and returns JSON.
+
+### Narrowing by stack
+
+`stacks` on QUERY and CORPUS_SEARCH (`--stacks` on `codastre query|corpora`, v0.18.1+) restricts a
+search to repos assigned a technical stack, and it prunes the candidate set **before** retrieval —
+on a fleet of hundreds of repos, the difference between scanning everything and scanning the
+relevant slice. The vocabulary is hierarchical:
+
+| Slug | Covers |
+|---|---|
+| `web`, `backend`, `data-engineering`, `ml-engineering`, `security`, `low-code`, `infrastructure` | themselves |
+| `mobile` | shared mobile repos **and** `mobile.android` **and** `mobile.ios` |
+| `mobile.android` (alias `android`), `mobile.ios` (alias `ios`) | only that platform |
+
+Multiple values are OR'd. A tenant can extend the catalog (`GET /v1/stacks` lists it). In direct and
+repo-URL modes a non-matching repo returns the ordinary empty result.
+
+**The trap: unassigned repositories match no stack filter.** Assignment is explicit metadata set by
+an admin, never inferred, and a fleet rolls it out gradually — so a stack-filtered call can return
+`ok, results: []` because the repo that has the answer isn't classified yet. **If a stack-filtered
+call comes back empty, retry once without `stacks` before concluding anything**, and say the filter
+was the cause. Pass `stacks` when the user names a stack ("in the iOS app", "backend only"); don't
+add one on your own inference from query words — technical words in a query are weak evidence of
+where the answer lives, which is why stacks are metadata and not query text.
 
 ## 4. Reading the response
 
@@ -459,11 +554,11 @@ add a filter, or corroborate by reading before trusting it.
 ### High-ranked hits, wrong causal link — a correctness failure distinct from staleness
 
 A ranking can put every *relevant file* in the top-k and the agent can still assemble the wrong
-**chain** between them — confidently, with no low-score signal to catch it. Observed in the field: asked
+**chain** between them — confidently, with no low-score signal to catch it. Observed on one large single-repo corpus: asked
 how a push-notification token reaches the backend, QUERY correctly surfaced both the real registration
-route (`UpdateDeviceRoute`) and an unrelated SDK call (`SCAService.registerPushToken`) in the same
+route and an unrelated SDK wrapper's `registerPushToken` in the same
 top-k, and the agent inferred a connection between them ("presumably uses") that a `Read` of
-`SCAServiceImpl.registerPushToken` showed to be false — that method forwards to a third-party SDK and
+the wrapper's implementation showed to be false — that method forwards to a third-party SDK and
 never touches the route. Grepping the same question traced the actual call graph (a `MessagingDelegate`
 callback → a domain service → the route) and got it right, at lower token cost, because literal
 matches don't let you skip verifying the edge between two matched files.
@@ -561,9 +656,9 @@ fan-out fixture, 513 → 377 B/edge (**−27%**); the agent rendering on a deplo
 4,743 → 1,785 B (**−62%**). There is no `snippets` knob to pair it with — GRAPH has no bodies to
 suppress — so `format: "agent"` is the whole lever, and there is no reason not to pull it on a
 traversal whose edges you intend to read as an answer rather than parse as data. Pull it where it
-arrives: on Claude Code that is `codastre graph <seed> --direction <dir> --format agent` on the CLI
-plane (§2c), which needs only a v0.14.0 binary — there are no bodies here, so the `--snippets`
-hydration gate doesn't apply to GRAPH at all.
+arrives (§2c): on v0.18.0+ either plane — MCP `format: "agent"` or `codastre graph <seed>
+--direction <dir> --format agent`; on v0.14.0–v0.17.x only the CLI. There are no bodies here, so the
+`--snippets` hydration gate doesn't apply to GRAPH at all.
 
 Two shape differences from QUERY worth knowing before you read a compact traversal: `edge_id` is
 dropped **unconditionally** (no tool accepts one, unlike `chunk_id`, which had to survive because
@@ -587,6 +682,44 @@ have to triage — and each unknown `repo_id` may cost a resolving call (§9). *
 own repo by default; go federated deliberately, not by omission.** Passing both `index_id` and
 `repo_url` is an error (`AMBIGUOUS_TARGET`); a `repo_url` with no index returns `REPO_NOT_INDEXED`
 (REGISTER it first).
+
+### Boundary questions across the fleet: CONTRACTS
+
+GRAPH answers questions *from a seed*: "who calls this route", "who consumes this topic". Some
+boundary questions have no seed — "which of our Kafka topics does nothing consume", "which routes
+does no indexed client call", "what do we call that nothing exposes". That is `CONTRACTS` (MCP) /
+`codastre contracts` (CLI, v0.17.0+).
+
+A contract is a canonical cross-repo boundary — an HTTP route (`http::GET::/users/{}`) or a Kafka
+topic (`topic::kafka::orders`) — with the repos that **expose** it and the repos that **use** it:
+
+| Status | Meaning |
+|---|---|
+| `orphan_exposer` | exposed, nothing indexed uses it — a dead endpoint or missing consumer *candidate* |
+| `orphan_user` | used, nothing indexed exposes it — often a repo that isn't indexed |
+| `matched` | exposed in one repo, used from another — the wired case |
+| `internal` | both sides in one repo — not cross-repo |
+| `quarantined` | every party is test/fixture/vendored/generated code |
+
+With no `status` you get the orphan report (`orphan_exposer` + `orphan_user`); `counts` always covers
+all five. Contracts are derived at read time from extracted endpoints — no index to go stale.
+
+**Read the scope block first.** A report over one repo finds no matches however well the boundaries
+line up: every contract is an orphan by construction. `scope.cross_repo_possible` is false when fewer
+than two repos in scope carry endpoints, and `scope.warnings` names why (`single_repo_scope`,
+`endpoints_in_one_repo`, `no_endpoints`, `truncated`). An empty or orphan-heavy answer with a warning
+is a scoping problem, not a finding. And an orphan is relative to what is *indexed*: an unindexed
+client still calls the route.
+
+`repo` narrows to repo UUIDs and can only shrink what the caller sees. The CLI's `--format agent`
+opens with the scope line; the MCP tool has no `format` argument and returns JSON. For edge-level
+detail on one contract (files, confidence), follow up with GRAPH (`topic=` for Kafka, `kind="http"`
+inbound for a route).
+
+Extractor coverage note: `implements` and `imports` edges gained Go, Kotlin, Swift and TypeScript
+coverage (and `extends` fixes for Kotlin/Swift) in the Tier B release. An empty `implements`/`imports`
+traversal in those languages on an older index was an extractor gap, not absence — a reindexed repo
+answers it.
 
 ## 8. Reading edges: confidence and resolution
 
@@ -642,9 +775,16 @@ service name from a shared path like `app/consumer.py`.
 2. Partition edges: ≥ 0.9 (will break), 0.5–0.9 (verify), < 0.5 (mention only).
 3. If the symbol is a handler/producer/endpoint near a boundary, also check `kafka`/`http` inbound —
    cross-service consumers won't show up in any text search.
-4. Report blast radius (files, edges, repos), high-confidence callers first, then proceed/verify.
-5. Zero inbound edges + zero QUERY usages → dead-code candidate; confirm with a literal text search
+4. If the symbol *is* a route or topic, pull its contract too (`CONTRACTS`, `status` =
+   matched/internal/orphan_exposer, `kind` = http|kafka): `matched` users all break on a delete;
+   `orphan_exposer` supports deletion but only against what is indexed.
+5. Report blast radius (files, edges, repos), high-confidence callers first, then proceed/verify.
+6. Zero inbound edges + zero QUERY usages → dead-code candidate; confirm with a literal text search
    for the name (dynamic references, reflection, templates) before declaring it safe to delete.
+
+**Ticket → code** ("customers report X — where do we fix it?"): CORPUS_SEARCH on the ticket text
+(`top_k` 5) → read card vs evidence → QUERY scoped to the top git corpus with a code-vocabulary
+rephrasing → answer. If the top two corpora are close, one scoped QUERY in each beats a federated one.
 
 **Cross-service tracing** ("what happens after X?"): QUERY to find the entry point → GRAPH outbound
 (all kinds, depth 2) → follow `kafka`/`http` edges into other repos → QUERY within the target repo for
@@ -658,66 +798,7 @@ handler details. Each hop is one small ranked call instead of cloning and greppi
   symbol name, then re-seed. If that QUERY hit has no `symbol_name`, re-seed on its `seed:<chunk_id>`
   instead (§4, §7) — a chunk id traverses directly and cannot mis-match a same-named symbol.
 - Literal strings, unindexed/uncommitted files → text search is the right tool; say so plainly.
-
-## 12. Fetching source when a result has no snippet
-
-A QUERY result is a **locator**: repo, path, line range, and `blob_sha`. When the response carries no
-`snippet`, the content must be fetched before it can be quoted. Adapters compile this into their own
-fetch/read primitives; the rules below are agent-neutral.
-
-**A snippet is hydrated exactly when a local checkout is known for that result's repo.** Hydration
-reads the file from disk; the root is resolved per repo (the repo the CLI runs inside, or one recorded
-in the checkout registry). Masking scheme does **not** decide it — cleartext repos hydrate given a
-checkout. So on a large tenant most federated hits arrive snippet-less simply because those repos
-aren't cloned, and obtaining a checkout *does* make snippets appear on the next call.
-
-Where the proxy reports a reason, branch on it rather than inferring: no-checkout (clone, or read via
-the forge API), file-absent-in-checkout (fetch — indexed at a ref the tree lacks), read-error. Absent
-reason and absent snippet means an older proxy; fall back to the rule above.
-
-The one genuine misconfiguration: an `hmac` repo returning a `path_token` with no `real_path` means
-the config is talking to the raw HTTP endpoint instead of the local proxy. Fix that at the source.
-
-GRAPH needs no source at all, so never fetch source for a purely structural question.
-
-**Never read a returned path directly.** `real_path`/`path_token` are repo-relative with **no repo
-prefix**, and such paths collide across repos in any large tenant (measured: 13 checkouts on one
-machine shared an `internal/infra/kafka/` tree). Resolving against the wrong repo root yields a real,
-plausible, wrong file **with no error** — the worst failure mode. Resolve the repo first, from
-`repos[repo_id].remote_url`.
-
-**Resolving a repo behind a GRAPH edge can be harder than behind a QUERY hit.** The server's GRAPH
-`repos` map carries no `remote_url`, so check whether the proxy backfilled one — when it did, the edge
-already names both services. When it didn't, there is no way to query *by* `repo_id`, so the "one cheap
-QUERY per repo" method only works when candidate repos are already known; with no candidates, search
-the forge for a distinctive path segment from the edge. Never infer a service from a shared path like
-`app/consumer.py`.
-
-**The CLI already tracks local checkouts.** `checkouts.json` in the CLI's config directory maps
-`remote_url` → absolute local path, keyed in the same format QUERY returns, and is the mechanism behind
-the `--repo-path` flag. Consult it before guessing a directory. It is **not exhaustive** — it lists only
-checkouts the CLI has seen — so also probe the clone root on disk, or you will re-clone every session.
-
-**Prefer a single-file fetch over a clone** for one to three files — that fetches one file's contents
-and touches no disk. Clone only for genuine exploration (grep, following imports); a clone brings the
-**whole repo at one commit**, not a file: blobless and shallow, so all paths are present with blob
-bytes on demand and no history (measured on a mid-size service: 1483 files, 1 commit, ~4 s, 16 MB on
-disk against 29 MB server-side for full history).
-
-When cloning, derive the root from existing checkout-registry entries when possible (their common
-parent is the machine's convention), else default to a `checkouts/` tree beside the CLI's own config,
-creating that root — it does not exist on a fresh machine. **Keep every root's layout flat,
-`<root>/<repo>`**, so a single probe finds a clone under any of them; a nested `<host>/<owner>/`
-layout makes the probe miss clones and re-clone each session. Same-named repos from different orgs
-then collide — give the second an explicit root rather than reintroducing nesting. Never clone into
-the current repo's tree.
-
-**Verify `blob_sha` before quoting — always.** Compare the result's `blob_sha` against the checkout's
-blob hash for that path, **by prefix, never by equality** (§4): outside the `verbose` default the sha
-arrives abbreviated to 12 hex, so an equality check against a full 40-hex hash marks every file
-stale — put both sides in the same form (`git rev-parse --short=12`) before comparing. One check
-catches both wrong-repo and stale-index at once. On mismatch, don't trust `line_start`: locate the
-symbol by name and say the index is behind. `stale: true` and `freshness: "syncing"`/`"degraded"`
-are corroborating signals.
-
-**Cite with the repo name.** A bare path is ambiguous across a multi-repo tenant.
+- A stack-filtered QUERY/CORPUS_SEARCH returns nothing → retry once without `stacks` (unassigned repos
+  match no filter, §3) before reporting absence.
+- CORPUS_SEARCH/CONTRACTS unavailable (older server or CLI) → one federated QUERY for routing (weaker:
+  it ranks chunks, not repos), or GRAPH `topic=`/`kind="http"` for a single boundary.
