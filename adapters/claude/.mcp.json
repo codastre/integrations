@@ -3,7 +3,10 @@
 		"codastre": {
 			"type": "stdio",
 			"command": "codastre",
-			"args": ["serve"]
+			"args": ["serve"],
+			"env": {
+				"CODASTRE_CLIENT": "claude-code-plugin/0.2.0"
+			}
 		}
 	}
 }

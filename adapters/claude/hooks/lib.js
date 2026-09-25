@@ -54,18 +54,50 @@ function cliInstalled() {
 }
 
 // --- CLI-plane capability -----------------------------------------------------
-// Which rungs the installed binary can actually reach on the CLI plane, resolved
-// by asking it rather than by parsing a version string (a source build reports
-// `dev`, and the flags are the thing that matters):
+// What the installed binary can actually do, resolved by asking it rather than
+// by trusting a version string wherever a flag or subcommand can be grepped for
+// (a source build reports `dev`, and the flags are the thing that matters):
 //
-//   hydrate     `codastre query --snippets` — bodies read from a local checkout
-//   agentFormat `--format agent` — the text rendering
+//   hydrate     `codastre query --snippets` — bodies read from a local checkout (v0.14.0)
+//   agentFormat `--format agent` — the text rendering (v0.14.0)
+//   corpora     `codastre corpora` — corpus ranking, CORPUS_SEARCH's CLI face (v0.15.0)
+//   contracts   `codastre contracts` — cross-repo boundaries and orphans (v0.17.0)
+//   mcpAgent    MCP `format: "agent"` survives a structuredContent-preferring
+//               client: the rendering rides in both representations (v0.18.0).
+//               The one capability with no flag to grep for, so it is read off
+//               the version — and an unparsable version (`dev`, a bare commit)
+//               leaves it false, i.e. the older, safe guidance.
+//   stacks      `--stacks` on query/corpora — stack-scoped retrieval (v0.18.1)
+//   client      the `--client` root flag — plugin attribution (v0.19.0). Gates
+//               every `--client` the plugin tells the model to pass: an older
+//               binary rejects an unknown root flag, which would turn an
+//               attribution nicety into a failed search.
 //
-// Both landed in v0.14.0; <= v0.13.1 has neither. This is what lets a session
-// know its plane without the model spending a probe call: see
-// core/retrieval-playbook.md 2c. Cached per binary (path + mtime + size) so
-// SubagentStart doesn't re-exec it for every subagent, and every failure mode
-// degrades to "unknown", never to a wrong claim.
+// This is what lets a session know its plane without the model spending a probe
+// call: see core/retrieval-playbook.md 2c. Cached per binary (path + mtime +
+// size) so SubagentStart doesn't re-exec it for every subagent, and every failure
+// mode degrades to "unknown", never to a wrong claim. CAPS_SCHEMA is in the cache
+// key so a cache written by an older plugin (without the newer fields) is never
+// read back as "the binary can't".
+const CAPS_SCHEMA = 2;
+
+// Parses `0.19.1` / `v0.19.1` / `0.19.1-rc1`; anything else is null.
+function parseVersion(v) {
+	const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || '').trim());
+	return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+// True only when `v` parses and is >= `min`. Unparsable → false (never a guess).
+function versionAtLeast(v, min) {
+	const a = parseVersion(v);
+	const b = parseVersion(min);
+	if (!a || !b) return false;
+	for (let i = 0; i < 3; i++) {
+		if (a[i] !== b[i]) return a[i] > b[i];
+	}
+	return true;
+}
+
 function cliCapabilities() {
 	const bin = resolveCli();
 	if (!bin) return { available: false };
@@ -79,7 +111,7 @@ function cliCapabilities() {
 	}
 	const cache = path.join(
 		os.tmpdir(),
-		`codastre-cli-caps.${Buffer.from(bin + stamp).toString('base64url').slice(-40)}.json`
+		`codastre-cli-caps.v${CAPS_SCHEMA}.${Buffer.from(bin + stamp).toString('base64url').slice(-40)}.json`
 	);
 	try {
 		return JSON.parse(fs.readFileSync(cache, 'utf8'));
@@ -103,12 +135,22 @@ function cliCapabilities() {
 
 	const help = String(run(['query', '--help']) || '');
 	if (!help) return { available: false };
+	const rootHelp = String(run(['--help']) || '');
 	const version = (String(run(['version']) || '').match(/v?\d+\.\d+\.\d+\S*/) || [''])[0];
+	// A subcommand is present when the root help lists it at the start of an
+	// indented line (cobra's "Available Commands" layout).
+	const hasCommand = (name) => new RegExp(`^\\s+${name}\\s`, 'm').test(rootHelp);
 	const caps = {
+		schema: CAPS_SCHEMA,
 		available: true,
 		version: version || 'unknown',
 		hydrate: /--snippets\b/.test(help),
 		agentFormat: /--format[^\n]*\bagent\b/.test(help),
+		corpora: hasCommand('corpora'),
+		contracts: hasCommand('contracts'),
+		mcpAgent: versionAtLeast(version, '0.18.0'),
+		stacks: /--stacks\b/.test(help),
+		client: /--client\b/.test(rootHelp),
 	};
 	try {
 		fs.writeFileSync(cache, JSON.stringify(caps));
@@ -116,6 +158,34 @@ function cliCapabilities() {
 		// Cache is an optimisation; a failed write just re-probes next session.
 	}
 	return caps;
+}
+
+// --- Plugin identity ----------------------------------------------------------
+// The plugin's own version, read from its manifest so the `--client` attribution
+// the hooks inject can never drift from what `/plugin` installed. The manifest is
+// one level up from hooks/ in both layouts (vendored here, and upstream's
+// adapters/claude/), so no env var is needed — $CLAUDE_PLUGIN_ROOT isn't set in
+// every context this module is required from anyway.
+function pluginVersion() {
+	try {
+		const manifest = path.join(__dirname, '..', '.claude-plugin', 'plugin.json');
+		const v = JSON.parse(fs.readFileSync(manifest, 'utf8')).version;
+		return typeof v === 'string' && v ? v : 'unknown';
+	} catch {
+		return 'unknown';
+	}
+}
+
+const CLIENT_TYPE = 'claude-code-plugin';
+
+function clientId() {
+	return `${CLIENT_TYPE}/${pluginVersion()}`;
+}
+
+// ` --client claude-code-plugin/<v>` when the installed CLI accepts the flag,
+// else '' — see `client` in cliCapabilities.
+function clientFlag(caps) {
+	return caps && caps.client ? ` --client ${clientId()}` : '';
 }
 
 // Token tracking is opt-in: CODASTRE_TRACK_TOKENS=1.
@@ -183,6 +253,10 @@ function estTokens(text, basis) {
 // content block *before* the response is stringified -- stringifying first would
 // wrap every response in JSON braces and misclassify the whole class as json.
 const AGENT_RENDERING = /^codastre\s+·\s/;
+// `codastre contracts --format agent` is the one renderer that opens with its
+// scope line instead ("scope: N repo(s) visible · …") — READ THE SCOPE LINE
+// FIRST is the point of that report, so the header is the scope.
+const CONTRACTS_RENDERING = /^scope:\s+\d+\s+repo\(s\)\s+visible\b/;
 
 // The renderer's header is the first line of stdout -- but the CLI plane writes
 // a `target: …` scope line to stderr, and a Bash tool result carries the two
@@ -193,7 +267,7 @@ function hasAgentHeader(text) {
 	return String(text || '')
 		.trim()
 		.split('\n', 3)
-		.some((line) => AGENT_RENDERING.test(line.trim()));
+		.some((line) => AGENT_RENDERING.test(line.trim()) || CONTRACTS_RENDERING.test(line.trim()));
 }
 
 function tokenBasis(cls, response) {
@@ -270,13 +344,17 @@ function isBashSearch(command) {
 }
 
 // Tool-name matcher for Codastre MCP calls under either namespace.
-const CODASTRE_TOOL = /codastre.*__(QUERY|GRAPH|REGISTER|SYNC)$/i;
+// CORPUS_SEARCH (v0.15.0) and CONTRACTS (v0.17.0) are retrieval calls too: they
+// must count as the Codastre attempt `auto` mode waits for, be blocked in
+// Codastre-free mode, and show up in the receipt.
+const CODASTRE_TOOL = /codastre.*__(QUERY|GRAPH|CORPUS_SEARCH|CONTRACTS|REGISTER|SYNC)$/i;
 
 // --- The CLI plane ----------------------------------------------------------
-// `codastre query` / `codastre graph` run through Bash are Codastre retrieval
-// calls that happen not to be MCP calls, and until the MCP `agent` rung
-// survives a structuredContent-preferring client they are the *recommended*
-// way to reach the format ladder (see core/retrieval-playbook.md §2c). Three
+// `codastre query|graph|corpora|contracts` run through Bash are Codastre retrieval
+// calls that happen not to be MCP calls. They are the cheapest way to reach the
+// format ladder with bodies on, and on a pre-v0.18.0 CLI the only way a
+// structuredContent-preferring client sees the `agent` rung at all (see
+// core/retrieval-playbook.md §2c). Three
 // things follow, and all three were wrong while this regex didn't exist:
 //   - they must never be classified as text search. `codastre query … | grep x`
 //     matches BASH_SEARCH, so Codastre-only mode would have blocked the very
@@ -288,9 +366,10 @@ const CODASTRE_TOOL = /codastre.*__(QUERY|GRAPH|REGISTER|SYNC)$/i;
 //     recommendation whose cost is invisible can't be measured.
 // Matches an optional path prefix (`~/go/bin/codastre`, `./codastre`) and the
 // Windows `.exe`, at a command boundary, so a pipeline stage counts too.
-const CODASTRE_CLI = /(?:^|[|;&(`]\s*)(?:[^\s|;&()`]*[\/\\])?codastre(?:\.exe)?\s+(query|graph)\b/i;
+const CODASTRE_CLI = /(?:^|[|;&(`]\s*)(?:[^\s|;&()`]*[\/\\])?codastre(?:\.exe)?\s+(query|graph|corpora|corpus|contracts)\b/i;
 
-// Returns 'query' | 'graph' for a Codastre CLI retrieval command, else null.
+// Returns 'query' | 'graph' | 'corpora' | 'corpus' | 'contracts' for a Codastre
+// CLI retrieval command, else null (`corpus` is the CLI's alias for `corpora`).
 function codastreCliCall(command) {
 	const m = CODASTRE_CLI.exec(String(command || ''));
 	return m ? m[1].toLowerCase() : null;
@@ -348,6 +427,18 @@ function readMode() {
 	return normalizeMode(safeRead(p));
 }
 
+// The effective mode for one session. A Tier D study session (the one the
+// study file was claimed by) runs under its arm's mode, overriding
+// /codastre:mode and CODASTRE_SEARCH_MODE: the arm is the experiment, and a
+// leftover standing mode must not leak into it. Every other session gets
+// readMode(). This is the only place the override is applied, so enforcement
+// (mode.js), tracking (track.js), failure marking (session_events.js) and the
+// per-turn instruction (mode_prompt.js) agree about which arm a session is in.
+function readModeFor(sessionId) {
+	const studyMode = normalizeMode(require('./study').studyModeFor(sessionId));
+	return studyMode || readMode();
+}
+
 // Per-turn run marker, keyed by session so two concurrent sessions never
 // clobber each other's marker (which would misattribute a receipt to the wrong
 // session's data). mode_prompt.js stamps it at turn start; track.js annotates
@@ -375,6 +466,66 @@ function writeRunMarker(sessionId, marker) {
 	}
 }
 
+// Annotate the per-session run marker with one Codastre call and whether it
+// failed. `auto` mode's PreToolUse gate reads it to allow a text-search
+// fallback only after a Codastre attempt (immediately, if that attempt failed).
+// Shared by track.js (PostToolUse, CODASTRE_ERROR regex over the response) and
+// session_events.js (PostToolUseFailure, the first-party failure signal).
+function recordCodastreOutcome(sessionId, failed) {
+	const marker = readRunMarker(sessionId) || {};
+	marker.codastre_calls = (marker.codastre_calls || 0) + 1;
+	if (failed) marker.codastre_failed = true;
+	writeRunMarker(sessionId, marker);
+}
+
+// --- Session events log --------------------------------------------------------
+// Compaction and tool-failure events, read back by `codastre collect`. Unlike
+// the token log this is always on: it holds counters and enums only (session
+// id, event, phase/trigger, tool name, class, a sanitised error type) -- never
+// a prompt, a path, a tool input or output, or an error message -- and it never
+// leaves the machine. It is always on because, unlike the transcript, a
+// compaction cannot be recovered after the fact: the signal exists only if a
+// hook was listening when it happened.
+function sessionEventsLogPath() {
+	return (
+		process.env.CODASTRE_SESSION_EVENTS_LOG ||
+		path.join(os.homedir(), '.config', 'codastre', 'session-events.jsonl')
+	);
+}
+
+// Tool class in the shared vocabulary: codastre | text-search | read | other.
+// Same precedence as track.js and mode.js: a `codastre query … | grep` shell
+// pipeline is a Codastre call, not a grep.
+function toolClass(toolName, toolInput) {
+	const name = String(toolName || '');
+	if (CODASTRE_TOOL.test(name)) return 'codastre';
+	if (name === 'Grep' || name === 'Glob') return 'text-search';
+	if (name === 'Bash') {
+		const command = String((toolInput && toolInput.command) || '');
+		if (codastreCliCall(command)) return 'codastre';
+		if (isBashSearch(command)) return 'text-search';
+		return 'other';
+	}
+	if (name === 'Read' || name === 'NotebookRead') return 'read';
+	return 'other';
+}
+
+// Append one JSON record, rotating to a single `.1` backup past maxBytes.
+// Never throws: a hook must not fail the session over bookkeeping.
+function appendJsonl(logPath, record, maxBytes) {
+	try {
+		fs.mkdirSync(path.dirname(logPath), { recursive: true });
+		try {
+			if (fs.statSync(logPath).size > maxBytes) fs.renameSync(logPath, logPath + '.1');
+		} catch {
+			// no file yet, or rename raced -- nothing to rotate.
+		}
+		fs.appendFileSync(logPath, JSON.stringify(record) + '\n');
+	} catch {
+		// Non-fatal by design.
+	}
+}
+
 function safeRead(p) {
 	try {
 		return fs.readFileSync(p, 'utf8');
@@ -388,6 +539,11 @@ module.exports = {
 	resolveCli,
 	cliInstalled,
 	cliCapabilities,
+	parseVersion,
+	versionAtLeast,
+	pluginVersion,
+	clientId,
+	clientFlag,
 	trackingEnabled,
 	tokenLogPath,
 	readStdinJson,
@@ -404,7 +560,12 @@ module.exports = {
 	hasAgentHeader,
 	modeFilePath,
 	readMode,
+	readModeFor,
 	runMarkerPath,
 	readRunMarker,
 	writeRunMarker,
+	recordCodastreOutcome,
+	sessionEventsLogPath,
+	toolClass,
+	appendJsonl,
 };

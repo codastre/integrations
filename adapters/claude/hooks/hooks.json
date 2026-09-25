@@ -1,5 +1,5 @@
 {
-	"description": "Codastre hooks: inject QUERY/GRAPH awareness into sessions and subagents, nudge away from text search, enforce the live A/B search mode, and (opt-in) log search-tool token usage for savings reports",
+	"description": "Codastre hooks: inject QUERY/GRAPH awareness into sessions and subagents, nudge away from text search, enforce the live A/B search mode, and (opt-in) log search-tool token usage for savings reports, and record compaction / tool-failure counters locally for codastre collect, and run Tier D study sessions (pre-registered prompt injection, arm enforcement)",
 	"hooks": {
 		"UserPromptSubmit": [
 			{
@@ -37,7 +37,7 @@
 		],
 		"PreToolUse": [
 			{
-				"matcher": "Grep|Glob|Bash|.*codastre.*__(QUERY|GRAPH|REGISTER|SYNC)",
+				"matcher": "Grep|Glob|Bash|.*codastre.*__(QUERY|GRAPH|CORPUS_SEARCH|CONTRACTS|REGISTER|SYNC)",
 				"hooks": [
 					{
 						"type": "command",
@@ -66,11 +66,44 @@
 		],
 		"PostToolUse": [
 			{
-				"matcher": "Grep|Glob|Bash|Read|.*codastre.*__(QUERY|GRAPH|REGISTER|SYNC)",
+				"matcher": "Grep|Glob|Bash|Read|.*codastre.*__(QUERY|GRAPH|CORPUS_SEARCH|CONTRACTS|REGISTER|SYNC)",
 				"hooks": [
 					{
 						"type": "command",
 						"command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/track.js\""
+					}
+				]
+			}
+		],
+		"PreCompact": [
+			{
+				"matcher": ".*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/session_events.js\" PreCompact"
+					}
+				]
+			}
+		],
+		"PostCompact": [
+			{
+				"matcher": ".*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/session_events.js\" PostCompact"
+					}
+				]
+			}
+		],
+		"PostToolUseFailure": [
+			{
+				"matcher": ".*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/session_events.js\" PostToolUseFailure"
 					}
 				]
 			}
