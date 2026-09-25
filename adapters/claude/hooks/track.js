@@ -10,15 +10,16 @@
 // `auto` mode can allow a text-search fallback only after a Codastre attempt.
 //
 // Codastre calls arrive on two planes and both are logged, tagged `plane`:
-// `mcp` (the QUERY/GRAPH tools) and `cli` (`codastre query|graph` through Bash,
-// which is the recommended plane while the MCP `agent` rung is swallowed by a
-// structuredContent-preferring client).
+// `mcp` (the QUERY/GRAPH/CORPUS_SEARCH/CONTRACTS tools) and `cli`
+// (`codastre query|graph|corpora|contracts` through Bash, the cheapest plane
+// with bodies on — and on a pre-v0.18.0 CLI the only one whose `agent` rung a
+// structuredContent-preferring client doesn't swallow).
 
 const fs = require('fs');
 const path = require('path');
 const {
 	trackingEnabled,
-	readMode,
+	readModeFor,
 	tokenLogPath,
 	readStdinJson,
 	estTokens,
@@ -28,14 +29,8 @@ const {
 	codastreCliCall,
 	cliRung,
 	CODASTRE_TOOL,
-	readRunMarker,
-	writeRunMarker,
+	recordCodastreOutcome,
 } = require('./lib');
-
-// Log when the user opted into tracking, OR when a live mode is active
-// (the receipt / auto-fallback need data either way). Otherwise no-op.
-const MODE = readMode();
-if (!trackingEnabled() && !MODE) process.exit(0);
 
 // Rotate the log once it gets large so it doesn't grow unbounded. Keeps a
 // single .1 backup (last window is enough for the receipt / audit).
@@ -54,12 +49,18 @@ const CODASTRE_ERROR =
 // While a mode is active we also count Read calls, so a grep workflow's
 // follow-up file reads (which it needs and Codastre's snippets often avoid) are
 // attributed rather than hidden — otherwise the comparison understates grep.
-function classify(toolName, toolInput) {
+function classify(toolName, toolInput, mode) {
 	if (CODASTRE_TOOL.test(toolName)) {
 		return {
 			class: 'codastre',
 			plane: 'mcp',
-			detail: toolInput.query_text || toolInput.chunk_or_symbol || toolInput.topic || '',
+			// CONTRACTS takes no text — record its filters so the row isn't blank.
+			detail:
+				toolInput.query_text ||
+				toolInput.chunk_or_symbol ||
+				toolInput.topic ||
+				[].concat(toolInput.kind || [], toolInput.status || []).join(',') ||
+				'',
 		};
 	}
 	if (toolName === 'Grep' || toolName === 'Glob') {
@@ -78,7 +79,7 @@ function classify(toolName, toolInput) {
 		if (!isBashSearch(command)) return null;
 		return { class: 'text-search', detail: command.slice(0, 200) };
 	}
-	if (MODE && toolName === 'Read') {
+	if (mode && toolName === 'Read') {
 		return { class: 'read', detail: toolInput.file_path || '' };
 	}
 	return null;
@@ -94,22 +95,17 @@ function rotateIfLarge(logPath) {
 	}
 }
 
-// In `auto` mode, record the turn's Codastre outcome on the run marker so
-// mode.js can allow a text-search fallback only after a Codastre attempt (or
-// immediately if Codastre errored). Keyed per session — no cross-talk.
-function recordCodastreOutcome(sessionId, failed) {
-	const marker = readRunMarker(sessionId) || {};
-	marker.codastre_calls = (marker.codastre_calls || 0) + 1;
-	if (failed) marker.codastre_failed = true;
-	writeRunMarker(sessionId, marker);
-}
-
 async function main() {
 	const data = await readStdinJson();
 	if (!data || !data.tool_name) return;
+	// Log when the user opted into tracking, OR when a live mode is active for
+	// this session (the receipt / auto-fallback need data either way). The mode
+	// is per session: a claimed Tier D study session runs under its arm's mode.
+	const mode = readModeFor(data.session_id || '');
+	if (!trackingEnabled() && !mode) return;
 
 	const toolInput = data.tool_input || {};
-	const entry = classify(data.tool_name, toolInput);
+	const entry = classify(data.tool_name, toolInput, mode);
 	if (!entry) return;
 
 	const responseText =
@@ -144,7 +140,7 @@ async function main() {
 				: 'text'
 			: tokenBasis(entry.class, data.tool_response);
 
-	if (MODE === 'auto' && entry.class === 'codastre') {
+	if (mode === 'auto' && entry.class === 'codastre') {
 		recordCodastreOutcome(data.session_id || '', CODASTRE_ERROR.test(responseText));
 	}
 

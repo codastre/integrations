@@ -9,7 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { readMode, tokenLogPath, runMarkerPath, readRunMarker } = require('./lib');
+const { readModeFor, tokenLogPath, runMarkerPath, readRunMarker } = require('./lib');
 
 // The session id is passed by mode_prompt.js's injected command. If absent
 // (e.g. the model dropped the arg), fall back to the most recently written
@@ -61,8 +61,8 @@ function loadRecords(sinceIso, sessionId) {
 // rung that a structuredContent-preferring client swallows over MCP. A receipt
 // that merged them would hide which plane produced the number.
 const LABEL = {
-	codastre: 'Codastre (QUERY/GRAPH)',
-	'codastre:mcp': 'Codastre (MCP QUERY/GRAPH)',
+	codastre: 'Codastre (retrieval)',
+	'codastre:mcp': 'Codastre (MCP tools)',
 	'codastre:cli': 'Codastre (CLI plane)',
 	'text-search': 'Text search (grep/glob)',
 	read: 'File reads',
@@ -80,7 +80,7 @@ function groupKeyOf(record) {
 
 function main() {
 	const sessionId = (process.argv[2] || '').trim();
-	const mode = readMode();
+	const mode = readModeFor(sessionId);
 	const marker = resolveMarker(sessionId);
 	const records = loadRecords(
 		marker && marker.started_at,

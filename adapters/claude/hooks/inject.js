@@ -9,12 +9,18 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
-const { codastreConfigured, cliInstalled, cliCapabilities, readStdinJson } = require('./lib');
+const {
+	codastreConfigured,
+	cliInstalled,
+	cliCapabilities,
+	clientFlag,
+	readStdinJson,
+} = require('./lib');
 
 const hookEventName = process.argv[2];
 
 const AWARENESS =
-	'You have access to the Codastre code-retrieval tools: QUERY (ranked hybrid semantic + lexical search across every indexed repo, snippets inline) and GRAPH (cross-repo relationships: calls, imports, extends/implements, Kafka, HTTP, shared packages). Prefer QUERY over Grep/Glob/rg/find for conceptual and identifier searches, and GRAPH for callers/callees, impact analysis, and cross-service tracing — one shaped call returns a handful of ranked hits instead of pages of raw matches. Keep Grep/Glob for literal strings, unindexed files, or when QUERY is unavailable. The codastre-search and codastre-graph-navigation skills carry the details (phrasing, scoping, the one-call stop rule) — load them when a search or structural question comes up.';
+	'You have access to the Codastre code-retrieval tools: QUERY (ranked hybrid semantic + lexical search across every indexed repo, snippets inline), GRAPH (cross-repo relationships: calls, imports, extends/implements, Kafka, HTTP, shared packages), CORPUS_SEARCH (ranks whole repos/doc sets for ticket- or incident-shaped prose — "which repo should I open?") and CONTRACTS (cross-repo HTTP routes and Kafka topics, and which have nothing on the other end). Prefer QUERY over Grep/Glob/rg/find for conceptual and identifier searches, GRAPH for callers/callees, impact analysis, and cross-service tracing, and CORPUS_SEARCH before a federated QUERY when the owning repo is unknown — one shaped call returns a handful of ranked hits instead of pages of raw matches. Keep Grep/Glob for literal strings, unindexed files, or when QUERY is unavailable. The codastre-search, codastre-corpus-routing and codastre-graph-navigation skills carry the details (phrasing, scoping, the one-call stop rule) — load them when a search, routing or structural question comes up.';
 
 const INSTALL_HINT =
 	'SETUP NOTICE — proactively tell the user (concisely, once): the Codastre Claude Code plugin is installed, but its `codastre` CLI is not on your PATH. The plugin runs its MCP server via `codastre serve`, so QUERY/GRAPH will not work until the CLI is installed. To fix: install the codastre CLI and put it on your PATH (see your Codastre onboarding or https://codastre.com; or build the Go CLI from the repo\'s `cli/` directory and symlink it into a PATH dir such as `~/.local/bin`), then run `codastre login` and restart Claude Code. Verify with `/codastre:status` or `codastre doctor`.';
@@ -23,40 +29,96 @@ const LOGIN_HINT =
 	'SETUP NOTICE — proactively tell the user (concisely, once): the `codastre` CLI is installed but not authenticated. Run `codastre login [--server URL]` to store an API key, then `/codastre:status` to verify. Until then the Codastre QUERY/GRAPH tools will fail.';
 
 // Which plane this session should reach the format ladder on, resolved locally so
-// the model never spends a call probing it. Claude Code prefers
-// `structuredContent` when both representations are present, and `format:
-// "agent"` deliberately puts the payload only in `content[0].text` — so over MCP
-// the rendering is discarded and the model sees a fixed summary. The rendering is
-// still reachable through the CLI, but only on a binary new enough to have the
-// flags. See core/retrieval-playbook.md 2c.
+// the model never spends a call probing it. Three eras, keyed off the installed
+// CLI (see core/retrieval-playbook.md 2c):
+//
+//   >= v0.18.0  the server renders `agent` itself and ships the rendering in BOTH
+//               representations, so an MCP `format: "agent"` call works in a
+//               structuredContent-preferring client like this one. In context
+//               the planes are then within a few percent (the MCP copy arrives
+//               JSON-escaped); the CLI is only cheaper on the wire.
+//   v0.14–0.17  MCP `agent` puts the payload only in content[0].text; Claude Code
+//               prefers structuredContent and the model sees a fixed summary. The
+//               rendering is reachable only through the CLI.
+//   <= v0.13.1  neither plane can render — MCP verbose only.
+//
+// Every `--client` in the templates below comes from clientFlag(), which is empty
+// on a CLI too old to accept it.
 function planeLine() {
 	const caps = cliCapabilities();
 	if (!caps || !caps.available) return '';
 	const version = caps.version && caps.version !== 'unknown' ? ` (${caps.version})` : '';
+	const client = clientFlag(caps);
+	const templates =
+		'`codastre query "<code vocabulary>" --top-k 6 [--language X] [--path-prefix P] --format agent ' +
+		`--snippets${client}\` and \`codastre graph <seed> --direction <inbound|outbound|both> --format agent${client}\``;
+	const traps =
+		' Two traps: **the CLI defaults bodies OFF**, so pass --snippets for ordinary "where is X / what does X ' +
+		'do" and omit it only when the ranking is the answer; and run inside the repo checkout (or pass ' +
+		'--repo-url/--repo-path) so paths resolve and bodies hydrate.';
 
+	if (caps.hydrate && caps.agentFormat && caps.mcpAgent) {
+		return (
+			` FORMAT LADDER — EITHER PLANE: with the installed codastre CLI${version}, QUERY/GRAPH ` +
+			'format="agent" returns its rendering over MCP, so ask for it instead of the verbose default (pair ' +
+			'it with snippets=false on locate-tier calls). The CLI plane returns the same rendering — in ' +
+			'context the two are within a few percent (the MCP copy arrives JSON-escaped) — so use whichever ' +
+			`is at hand: ${templates}. Against MCP verbose the agent rung saves ~−32% with bodies on and ` +
+			'~−80% for locations-only.' +
+			traps +
+			' Stay on the MCP tools when Bash is unavailable, for REGISTER/SYNC, or when you need the raw JSON ' +
+			'envelope.' +
+			extrasLine(caps, client)
+		);
+	}
 	if (caps.hydrate && caps.agentFormat) {
 		return (
 			' FORMAT LADDER — USE THE CLI PLANE: this client discards an MCP `agent` rendering (it prefers ' +
 			'`structuredContent`, where that rung carries only a fixed summary), so do not ask QUERY/GRAPH for ' +
 			`format="agent" — it returns no results. The installed codastre CLI${version} can render and hydrate, ` +
-			'so take the cheap rung through Bash instead: `codastre query "<code vocabulary>" --top-k 6 ' +
-			'[--language X] [--path-prefix P] --format agent --snippets` and `codastre graph <seed> --direction ' +
-			'<inbound|outbound|both> --format agent`. Measured against MCP verbose on one pinned result set: ' +
-			'−32% tokens with bodies on, −79% for locations-only. Two traps: **the CLI defaults bodies OFF**, so ' +
-			'pass --snippets for ordinary "where is X / what does X do" and omit it only when the ranking is the ' +
-			'answer; and run inside the repo checkout (or pass --repo-url/--repo-path) so paths resolve and ' +
-			'bodies hydrate. Stay on the QUERY/GRAPH tools when Bash is unavailable, for REGISTER, or when you ' +
-			'need the raw JSON envelope.'
+			`so take the cheap rung through Bash instead: ${templates}. Measured against MCP verbose on one ` +
+			'pinned result set: −32% tokens with bodies on, −79% for locations-only.' +
+			traps +
+			' Stay on the QUERY/GRAPH tools when Bash is unavailable, for REGISTER, or when you need the raw JSON ' +
+			'envelope. Tell the user ONCE, in one line, that codastre CLI v0.18.0+ makes MCP format="agent" work ' +
+			'too (v0.19.1 is current) — and let them choose how to update it.' +
+			extrasLine(caps, client)
 		);
 	}
 	return (
 		' FORMAT LADDER — MCP `verbose` ONLY: this client discards an MCP `agent` rendering, and the installed ' +
 		`codastre CLI${version} predates the CLI plane's \`--format agent\` / \`--snippets\` (both added in ` +
 		'v0.14.0), so neither plane can deliver the cheap rung. Use format="verbose" on QUERY/GRAPH and do not ' +
-		'attempt format="agent". Tell the user ONCE, in one line, that updating the codastre CLI would cut ' +
-		'roughly a third of the tokens per hydrated retrieval call — and let them choose how to update it ' +
-		'(do not guess a package name or run an installer).'
+		'attempt format="agent". Tell the user ONCE, in one line, that updating the codastre CLI (v0.19.1 is ' +
+		'current) would cut roughly a third of the tokens per hydrated retrieval call — and let them choose ' +
+		'how to update it (do not guess a package name or run an installer).'
 	);
+}
+
+// The newer CLI surfaces, mentioned only when the installed binary has them —
+// the MCP tools themselves come from the server and are named in AWARENESS.
+function extrasLine(caps, client) {
+	let out = '';
+	if (caps.corpora) {
+		out +=
+			' When the owning repo is unknown (a ticket, an incident, a feature description), rank repos first — ' +
+			`\`codastre corpora "<text>" --top-k 5 --format agent${client}\` (CORPUS_SEARCH over MCP) — then ` +
+			'QUERY scoped to the winner with --repo-url.';
+	}
+	if (caps.contracts) {
+		out +=
+			' For fleet-wide "which routes/topics are unwired" questions, ' +
+			`\`codastre contracts [--kind http|kafka] --format agent${client}\` (CONTRACTS over MCP) — read its ` +
+			'scope line before trusting an orphan.';
+	}
+	if (caps.stacks) {
+		out +=
+			' `--stacks <web|backend|mobile|android|ios|data-engineering|ml-engineering|security|low-code|' +
+			'infrastructure>` (MCP `stacks`) narrows federated query/corpora before retrieval, but unassigned ' +
+			'repos match no stack — if a stack-filtered call comes back empty, retry once without it before ' +
+			'concluding anything.';
+	}
+	return out;
 }
 
 const PRETOOL_NUDGE =
