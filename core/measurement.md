@@ -3,7 +3,7 @@
 The shared, agent-neutral definition of how Codastre-vs-text-search cost is measured, so every
 adapter and the benchmark harness produce comparable numbers. The **canonical runtime
 implementation** for the Claude adapter is `adapters/claude/hooks/lib.js` (+ `track.js`,
-`receipt.js`); a future adapter should port the same logic and log schema rather than inventing its
+`receipt.js`, `session_events.js`); a future adapter should port the same logic and log schema rather than inventing its
 own. Keep this file and that implementation in sync.
 
 ## Token estimation
@@ -99,6 +99,39 @@ search's cost when tracking is passive/off.
 
 The log self-rotates to a single `.1` backup past a size cap so it never grows unbounded.
 
+## Session events log (hooks, always on, local only)
+
+Separate from the token log above and never summed with it. One record per compaction or tool
+failure, counters and enums only:
+
+```json
+{"ts":"<ISO-8601>","session_id":"…","event":"compact","phase":"pre|post","trigger":"auto|manual|unknown"}
+{"ts":"<ISO-8601>","session_id":"…","event":"tool_failure","tool":"…","class":"codastre|text-search|read|other","error_type":"<[a-z0-9_]{1,40} or other>"}
+```
+
+- Count compactions from `phase: "pre"` only; `post` exists as a cross-check and is never added.
+- `trigger: "unknown"` is counted as neither auto nor manual.
+- No field carries content: no prompt, summary, tool input/output, error message or path. That is
+  what lets the log be on by default — and it has to be, because compaction is not recoverable
+  from the transcript retrospectively.
+
+## Study log (hooks, Tier D only, local only)
+
+Written only while a Tier D study file exists (`codastre study start`), one line per claimed
+session, ids and a hash only:
+
+```json
+{"ts":"<ISO-8601>","session_id":"…","event":"study_claim","assignment_id":"<uuid>","arm":"tool|no_tool","prompt_sha256":"<64 hex>"}
+```
+
+- The pre-registered prompt is **not** in it — only its SHA-256, which the server compares against
+  the registered hash before it books the session into an arm.
+- `codastre collect` reads it to tag that one session's upload with its assignment; the arm itself
+  is the server's record, never the client's claim.
+- Path: `$CODASTRE_STUDY_LOG` or `~/.config/codastre/study-sessions.jsonl`. The study file it
+  refers to (`$CODASTRE_STUDY_FILE`, `~/.config/codastre/study.json`, `0600`) holds the prompt so
+  the hook can inject it, and is removed by `codastre study stop`.
+
 ## Search-classification (what is a "text search")
 
 A shell command counts as a text search when it invokes a search tool at a command boundary
@@ -117,13 +150,14 @@ it** (otherwise the text-search arm can reach Codastre through a plane the enfor
 watching, and the A/B silently leaks); and a codastre-first mode must count it as the Codastre
 attempt that unlocks a text-search fallback.
 
-## Three measurement tiers (report the tier and its caveats)
+## Measurement tiers (report the tier and its caveats)
 
 | Tier | Measures | Inference | Where |
 |---|---|---|---|
 | **A — scripted** | Raw data-plane efficiency + correctness of a *fixed* recipe | none | `benchmarks/run.py` |
 | **B — agentic A/B** | End-to-end agent cost incl. reasoning + tool choice | 2 subagents | the adapter's compare command |
 | **C — live, user-judged** | *Your* question on *your* corpus, one at a time | 1 agent | the adapter's mode + receipt |
+| **D — paired study** | A *whole task*, pre-registered, run with and without the tool | 1 agent per arm, blind human judge | `codastre study` + the adapter's study hook |
 
 - **Tier A** is the CI-friendly default: deterministic, catches data-plane regressions without agent
   variance. It scores a fixed recipe, so it can't reward "one call answers it" ergonomics beyond call
@@ -132,9 +166,63 @@ attempt that unlocks a text-search fallback.
   timestamp window (deterministic), not from agent self-reports; fall back to self-report only when a
   window has no logged records, and label it.
 - **Tier C** is the most honest demo but is one question and subject to run-to-run variance.
-- **All three tiers require a pinned result set** (above). Tier A is pinned by its fixed recipe;
+- **Tiers A–C all require a pinned result set** (above); Tier D pins by running a pair's arms close together (below). Tier A is pinned by its fixed recipe;
   Tiers B and C are not pinned by anything and must pin themselves — one captured envelope for a
   format-axis comparison, both arms back to back for a tool-axis one.
+
+## Tier D — paired study (pre-registered)
+
+Tiers A–C measure a search step. Tier D measures a **task**: the same pre-registered task run
+under a `tool` arm and a `no_tool` arm, both sessions measured exactly from their transcripts
+(cost, wall-clock, tokens, compactions), correctness judged blind. It is the strongest instrument
+here and the easiest to fool yourself with, so its rules are stricter than the others'.
+
+- **Pre-register before either arm runs.** Prompt, acceptance criterion, target *n* and design are
+  recorded on the server and are immutable; their SHA-256 travels in every receipt. You cannot run
+  a task twice — the second arm starts knowing the answer, and for a retrieval tool that is
+  maximally damaging, because the treatment *is* finding the information. Most of that
+  contamination flows through the prompt a human writes the second time: better vocabulary, the
+  right file named, the dead end skipped. A fixed prompt, injected verbatim by the hook, turns a
+  human-memory problem into an agent-only comparison — which is what should be measured anyway,
+  since the tool serves the agent. It also makes the study **replayable** without the human.
+- **The server assigns the arm, and balances order.** The client carries an assignment id, never
+  its own arm, so an arm cannot be chosen after the run. A new pair opens with whichever arm has
+  opened fewer pairs; a tie is a fair coin. Publish `order_balance` with every result.
+- **Within vs between.** `within` (one developer, both arms, counterbalanced) is cheap and
+  carries a *directional* carryover bias even with a fixed prompt — treat it as directional.
+  `between` (two developers, one arm each) trades that bias for *unbiased* noise. **Prefer
+  `between` for a headline.** One pair per developer per task, either way.
+- **Judge blind.** Volunteers try harder in the arm they favour and cannot be blinded; the judge
+  can. The judge sees the acceptance criterion and a diff labelled only by assignment id — no arm,
+  order, pair or person — and records correct / incorrect against the pre-registered criterion.
+- **Enforce on both planes.** The `no_tool` arm runs in `grep` mode, which blocks the QUERY/GRAPH
+  tools *and* the `codastre query|graph` CLI (see Search-classification). A leak through the plane
+  the enforcement wasn't watching silently turns the pair into tool vs tool. The study arm
+  overrides any standing `/codastre:mode` for the claimed session, and only that session.
+- **Fresh sessions only.** The hook claims a session for a study only when it has no earlier
+  prompt. A session that already explored the code is contaminated before the task arrives.
+- **Classify task shape and publish the distribution** (`conceptual`, `cross_repo`, `impact`,
+  `literal`, `other`). Some tasks are literal-string lookups text search legitimately wins — Tier A
+  ships one on purpose. A bare mean over an unstated mix is a statement about the mix.
+- **Index drift.** Run the two arms of a pair close together and record `freshness`, per the
+  pinning rules; a pair split across a re-index compares two corpora.
+- **Render pairs, not averages.** Pairs are rows: cost, wall-clock and correctness side by side,
+  `n` and order balance prominent. The only headline is **counts of pairs** — correct per arm,
+  cheaper per arm, faster per arm — over the pre-registered *n*. The moment it becomes a running
+  average that ticks upward it is the vanity metric this contract exists to prevent.
+- **Gate the headline on the target *n*.** Below it, the headline is withheld and says how many
+  pairs are complete and judged. A pair counts only when both arms ran *and* both were judged —
+  cost without correctness is the cheap-and-wrong trap from the reference table. Above it, the
+  headline counts the **first *n* pairs by completion**: stopping is decided by the
+  pre-registration, not by a favourable run of late pairs.
+- **History cannot seed pairs.** A session on disk that predates the prompt's registration was
+  not run under a pre-registered prompt, and labelling two historic sessions a "pair" after the
+  fact is choosing pairs with the result in view — the exact failure the target-*n* gate exists
+  to prevent. Historic transcripts can seed the exact per-session cohort (cost, context
+  re-read amplification, compactions); they never enter a Tier D result. *n* grows by replaying
+  pre-registered prompts.
+- **Measure the things that are not tokens first**, in the order a reader will act on them:
+  correctness (blind), wall-clock, measured cost, and only then tokens as a diagnostic.
 
 ## Reference costs (measured — one question, one repo)
 
@@ -204,16 +292,16 @@ calls are cheaper.
 - Disclose a **polluted tenant**: a large fixture-heavy/unrelated repo inflates federated Codastre
   cost and hurts precision — scope or de-index it before a headline comparison and note what you did.
 
-## Field observation (2026-08-18): four Tier-B runs, one repo, no reliable pattern yet
+## Observation (2026-08-18): four Tier-B runs, one repo, no reliable pattern yet
 
-Four `/codastre:compare`-style runs against a single-repo, Swift-heavy iOS corpus, each
+Four `/codastre:compare`-style runs against one large single-repo, Swift-heavy corpus, each
 side tuned per the fairness rules above (`top_k` 6, `language: "swift"` forced on Codastre,
 identical wording, both arms captured minutes apart). Measured from the token log, not self-report.
 
 | Question shape | Codastre tokens | Text-search tokens | Cheaper | Correct? |
 |---|---:|---:|---|---|
-| Distinctive symbol name guessable (SCA challenge trigger) | 11,263 | 6,683 | text search | Codastre cited one now-deleted file (superseded by a recent refactor) |
-| Generic/paraphrastic terms, two valid call sites (card limit change) | 4,066 | 11,608 | Codastre | both correct |
+| Distinctive symbol name guessable (auth-challenge trigger) | 11,263 | 6,683 | text search | Codastre cited one now-deleted file (superseded by a recent refactor) |
+| Generic/paraphrastic terms, two valid call sites (limit-change flow) | 4,066 | 11,608 | Codastre | both correct |
 | Multi-hop causal chain, two similarly-ranked candidate files (push-token registration) | 4,022 | 1,746 | text search | **Codastre wrong** — see the chain-mis-attribution failure mode in `retrieval-playbook.md` §5 |
 | Generic/paraphrastic terms, inconsistent naming (app-rating prompt) | 9,317 | 2,144 | text search | both correct; text search found more call sites |
 
@@ -237,7 +325,10 @@ sporadic** — which changes the follow-up from "see if it reproduces" to a prot
 > swallows the rendering, and say so in the report.** Never let a comparison mix "genuinely cheap"
 > with "cheap because the call returned nothing" in one number.
 
-The four rows above should be re-run under that rule before anything is concluded from them. And
+The four rows above should be re-run under that rule before anything is concluded from them.
+(From `codastre` v0.18.0 the rule is moot: the server carries the rendering in `structuredContent`
+too, so an MCP `agent` call delivers it — verified 2026-09-23 on v0.19.1. It still applies to any run
+on a v0.14.0–v0.17.x binary; record the CLI version in the report.) And
 note what the explanation does *not* license: it does not mean the ladder's saving is unavailable
 here — it means the saving has to be taken on the CLI plane (`codastre query --format agent`), which
 is a different measurement plane and must be labelled as one — and is now measured on a pinned

@@ -1,6 +1,6 @@
 ---
 name: codastre-graph-navigation
-description: This skill should be used for structural code questions — "what calls X", "what would break if I change X", "what consumes this Kafka topic", "which services talk to each other", impact analysis before a rename/refactor/delete, or tracing a request across services. It teaches the Codastre GRAPH tool: directions, edge kinds, depth, and how to read confidence/resolution.
+description: This skill should be used for structural code questions — "what calls X", "what would break if I change X", "what consumes this Kafka topic", "which services talk to each other", impact analysis before a rename/refactor/delete, tracing a request across services, or fleet-wide boundary questions — "which topics have no consumer", "which routes does nothing call". It teaches the Codastre GRAPH tool (directions, edge kinds, depth, confidence/resolution) and the CONTRACTS tool (cross-repo route/topic orphans).
 ---
 
 # Codastre Graph Navigation
@@ -20,9 +20,10 @@ Seed with a symbol name or chunk_id; pick a direction relative to the seed:
 | Everything connected to `f` | `GRAPH(chunk_or_symbol="f", direction="both")` |
 | Who produces/consumes topic T? | `GRAPH(topic="orders.created")` — seed-free, forces `kind=kafka`; src = producer, dst = consumer |
 | Subclasses / implementors of `C` | `GRAPH(chunk_or_symbol="C", kind="extends", direction="inbound")` (structural edges point *into* the definition) |
+| Which topics/routes have **nothing** on the other end? | `CONTRACTS(kind=["kafka"])` — no seed; see "Fleet-wide boundaries" below |
 
 - `depth`: 1 (default) to 3. Depth 2–3 for blast radius; depth 1 for direct neighbors.
-- `kind`: filter to one of `kafka | http | package | calls | extends | implements | imports`; omit for all.
+- `kind`: filter to one of `kafka | http | package | calls | extends | implements | imports`; omit for all. `implements`/`imports` have extractor coverage for Go, Kotlin, Swift and TypeScript (plus `extends` fixes for Kotlin/Swift) since the Tier B release — an empty result there on an index built before it is an extractor gap, not absence.
 - Target modes mirror QUERY: `index_id` (one index), `repo_url` (one repo), or neither — federated across all visible repos, which is what makes cross-service tracing work. Federation isn't free: on a tenant with large or unrelated repos a federated seed matches same-named symbols everywhere, and each unknown `repo_id` may cost a resolving call (see below). **Scope to the session's own repo by default; go federated deliberately, not by omitting the parameter.** Passing both `index_id` and `repo_url` is an error (`AMBIGUOUS_TARGET`); a `repo_url` with no index returns `REPO_NOT_INDEXED` — REGISTER it first.
 
 ### Always pass `direction` explicitly — never let it default
@@ -71,9 +72,9 @@ answer rather than parse as data.
 
 Three shape differences to know before reading a compact or agent traversal:
 
-- **`structuredContent` no longer holds the edges** in `agent` format. It carries a fixed summary —
-  `format`, `status`, `freshness`, `edge_count`, and `rendering_in`. **The answer is in
-  `content[0].text`.**
+- **Read `rendering`.** On v0.18.0+ it is in `structuredContent` and `content[0].text` alike. On
+  v0.14.0–v0.17.x `structuredContent` holds only a fixed summary (`format`, `status`, `freshness`,
+  `edge_count`, `rendering_in`) and the edges are only in `content[0].text`.
 - **`edge_id` is dropped unconditionally** in `compact`, unlike QUERY's `chunk_id` (which survives
   because GRAPH seeds on it). Nothing accepts an `edge_id`; per-edge curation is REST `/v1/edges`.
 - **`confidence` rounds to 3 dp**, deliberately not 2: confidence is read against the documented
@@ -89,7 +90,12 @@ is client-side. An **absent** `format` therefore means an out-of-date `codastre`
 server limitation; with one, most MCP clients won't send the argument at all and the rung is
 unreachable.
 
-**But on Claude Code it isn't reachable over MCP — take it on the CLI plane instead.** `agent`
+**From v0.18.0 it reaches the model over MCP too.** The server renders `agent` and ships the
+rendering in both representations, so `GRAPH(..., format="agent")` works in Claude Code (verified
+2026-09-23 on v0.19.1), and the planes cost about the same in context. Use whichever is at hand. The
+next paragraph is for **v0.14.0–v0.17.x** binaries, which the SessionStart context will name.
+
+**On v0.14.0–v0.17.x it isn't reachable over MCP — take it on the CLI plane instead.** `agent`
 carries the traversal in `content[0].text` and only a fixed summary in `structuredContent`, so a
 client that prefers `structuredContent` when both are present shows you `edge_count` and no edges
 (verified in Claude Code, 2026-08-18, `codastre` v0.14.0 — the frame carried the rendering; the model
@@ -110,8 +116,8 @@ needs v0.14.0+, and don't repeat it. Same flag-for-argument mapping as the tool:
 `--depth`, `--kind`, `--repo-url`, `--all` (federated), `--topic`.
 
 Stay on MCP when Bash is unavailable (restricted subagent or sandbox), when the CLI isn't installed
-or logged in, or on a client that *doesn't* swallow the rendering — there MCP `agent` is cheapest and
-the detour buys nothing. CLI-plane traversals are logged like MCP ones (`class: "codastre"`,
+or logged in, or on v0.18.0+ — there MCP `agent` delivers the same rendering and the detour buys
+nothing. CLI-plane traversals are logged like MCP ones (`class: "codastre"`,
 `plane: "cli"`), so the receipt still counts them.
 
 ## Reading edges: confidence and resolution
@@ -149,6 +155,36 @@ Cross-repo `kafka`/`http`/`package` edges are minted when two repos share a **st
 - **True cross-repo edges between real application code now score ≥ 0.5 `resolved` on clean literal matches** — a lone shared topic that only the communicating services expose is graded as the discriminating evidence it is. So the ≥ 0.5 = trust / < 0.5 = hypothesis reading works again for cross-repo kinds; corroborate with the endpoint code when the call is high-stakes.
 - **Unclassified endpoints** (`path_class` absent — points indexed before classification): fall back to sanity-checking that both endpoints are real application code before stating the edge as fact.
 
+## Fleet-wide boundaries: CONTRACTS
+
+GRAPH needs a seed. "Which Kafka topics does nothing consume?", "which routes does no indexed client
+call?", "what do we call that nothing exposes?" have none — that is `CONTRACTS`
+(`mcp__plugin_codastre_codastre__CONTRACTS` / `mcp__codastre__CONTRACTS`; CLI `codastre contracts`,
+v0.17.0+). A contract is a canonical boundary — `http::GET::/users/{}` or `topic::kafka::orders` —
+with the repos that **expose** it and the repos that **use** it:
+
+| Status | Meaning |
+|---|---|
+| `orphan_exposer` | exposed, nothing indexed uses it — dead endpoint / missing consumer *candidate* |
+| `orphan_user` | used, nothing indexed exposes it — often a repo that isn't indexed |
+| `matched` | exposed in one repo, used from another |
+| `internal` | both sides in one repo — not cross-repo |
+| `quarantined` | every party is test/fixture/vendored/generated |
+
+- No `status` → the orphan report (`orphan_exposer` + `orphan_user`). `counts` always covers all five,
+  so orphans read against the whole. `kind` = `http` | `kafka`; `repo` narrows to repo UUIDs and can
+  only shrink what you see.
+- **Read the scope block first.** Over one repo every contract is an orphan by construction.
+  `scope.cross_repo_possible: false` and `scope.warnings` (`single_repo_scope`,
+  `endpoints_in_one_repo`, `no_endpoints`, `truncated`) say when the *scope* produced the answer. An
+  empty or orphan-heavy report with a warning is a scoping problem, not a finding.
+- An orphan is relative to what is indexed — an unindexed client still calls the route. Say
+  "no indexed consumer", never "unused".
+- The MCP tool has no `format` argument; the cheap rendering is `codastre contracts --format agent`
+  (it opens with the scope line). Parties carry masked `path_token`s for repos you have no checkout of.
+- For edge-level detail on one contract (files, confidence), follow up with GRAPH — `topic=` for
+  Kafka, `kind="http"` inbound for a route.
+
 ## Impact analysis recipe
 
 Before renaming, deleting, or changing the signature of a symbol:
@@ -156,8 +192,9 @@ Before renaming, deleting, or changing the signature of a symbol:
 1. `GRAPH(chunk_or_symbol="<symbol>", direction="inbound", depth=2)` — direct and transitive callers.
 2. Partition edges: confidence ≥ 0.9 (will break), 0.5–0.9 (verify), < 0.5 (mention only).
 3. If the symbol is a handler/producer near a service boundary, also check `kind="kafka"` and `kind="http"` inbound — cross-service consumers won't show up in any text search.
-4. Report: blast radius (N files, M edges, which repos), the high-confidence callers first, then a proceed/verify recommendation.
-5. Zero inbound edges + zero QUERY hits for usages → dead-code candidate; confirm with a literal Grep for the name (dynamic references, reflection, templates) before declaring it safe to delete.
+4. If the symbol *is* a route or topic, pull its contract: `CONTRACTS(kind=[...], status=["matched","internal","orphan_exposer"])` and find the entry. `matched` users all break on a delete; `orphan_exposer` supports deletion only against what is indexed.
+5. Report: blast radius (N files, M edges, which repos), the high-confidence callers first, then a proceed/verify recommendation.
+6. Zero inbound edges + zero QUERY hits for usages → dead-code candidate; confirm with a literal Grep for the name (dynamic references, reflection, templates) before declaring it safe to delete.
 
 ## Cross-service tracing recipe
 
@@ -170,6 +207,6 @@ Before renaming, deleting, or changing the signature of a symbol:
 
 ## Related
 
-- `/codastre:graph <symbol>` and `/codastre:impact <symbol>` — slash command equivalents
+- `/codastre:graph <symbol>`, `/codastre:impact <symbol>` and `/codastre:contracts` — slash command equivalents
 - codastre-search skill — finding the right seed symbol
 - **Source of truth:** compiled from the agent-neutral `core/retrieval-playbook.md` (§7–11) in the monorepo root — edit that first, then re-sync this skill.

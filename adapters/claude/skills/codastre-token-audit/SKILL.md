@@ -30,10 +30,10 @@ When `CODASTRE_TRACK_TOKENS=1` is set, a PostToolUse hook appends one JSONL reco
 the two legitimately disagree. A client that prefers `structuredContent` shows the model only an
 `agent` response's fixed summary: JSON-shaped bytes (`tok_basis: "json"`) from an agent-rung call
 (`rung: "agent"`). **Read a run of `rung: "agent"` records at ~40 tokens each as the rendering being
-swallowed, not as a saving** — exclude them from any median and measure the rung on the CLI plane
+swallowed, not as a saving** (pre-v0.18.0 CLI only — from v0.18.0 the rendering reaches the model over MCP too) — exclude them from any median and measure the rung on the CLI plane
 instead.
 
-- `plane` (Codastre calls only) is `mcp` for a tool call and `cli` for a `codastre query|graph` shell
+- `plane` (Codastre calls only) is `mcp` for a tool call and `cli` for a `codastre query|graph|corpora|contracts` shell
 call, which is logged, classified and priced exactly like an MCP one. Group by it: the CLI plane
 carries one copy of the payload and reaches the `agent` rung that a `structuredContent`-preferring
 client swallows, so **a blended median across planes understates one side and overstates the other**.
@@ -156,7 +156,7 @@ than 2×.
 
 ## A real four-question run, and why it doesn't yet settle "which wins"
 
-Four Tier-B comparisons were run against a Swift-heavy iOS repo in one session (2026-08-18), varying only the
+Four Tier-B comparisons were run against one large single-repo corpus in one session (2026-08-18), varying only the
 question's vocabulary shape:
 
 | Question shape | Codastre | Text search | Cheaper | Correct? |

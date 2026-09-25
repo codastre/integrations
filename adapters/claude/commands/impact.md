@@ -1,7 +1,7 @@
 ---
 description: Blast-radius analysis before changing or deleting a symbol
 argument-hint: <symbol> [--depth N]
-allowed-tools: mcp__plugin_codastre_codastre__GRAPH, mcp__codastre__GRAPH, mcp__plugin_codastre_codastre__QUERY, mcp__codastre__QUERY, Grep
+allowed-tools: mcp__plugin_codastre_codastre__GRAPH, mcp__codastre__GRAPH, mcp__plugin_codastre_codastre__QUERY, mcp__codastre__QUERY, mcp__plugin_codastre_codastre__CONTRACTS, mcp__codastre__CONTRACTS, Bash(codastre contracts:*), Grep
 ---
 
 Assess the impact of changing/renaming/deleting the given symbol. Load the `codastre-graph-navigation` skill's interpretation rules if not already loaded.
@@ -10,7 +10,8 @@ Arguments: `$ARGUMENTS` (free text = symbol; `--depth <n>`, default 2, max 3)
 
 1. Call the Codastre `GRAPH` tool: `chunk_or_symbol=<symbol>, direction="inbound", depth=<depth>` — all edge kinds, federated (no `repo_url`/`index_id`) so cross-repo consumers are included.
 2. If the symbol looks boundary-adjacent (handler, producer, endpoint, exported package symbol), the kafka/http/package inbound edges from step 1 are the cross-service blast radius — call them out separately.
-3. If zero edges return: QUERY for the symbol to check it exists under that name; if it exists but has no inbound edges, run one literal Grep for the name to catch dynamic/reflective references before calling it dead code.
+3. If the symbol *is* a boundary — an HTTP route handler or a Kafka topic — also pull its contract: `codastre contracts --kind <http|kafka> --status matched --status internal --status orphan_exposer --format agent --client claude-code-plugin/0.2.0` (or the `CONTRACTS` MCP tool with the same filters; `--client` needs CLI v0.19.0), and find the entry for this route/topic. `matched` lists the repos that *use* it — every one of them breaks on a delete; `orphan_exposer` means nothing indexed uses it, which supports deletion but is not proof (an unindexed client still counts). Read the scope line first: a `single_repo_scope` warning means the report can't see consumers at all.
+4. If zero edges return: QUERY for the symbol to check it exists under that name; if it exists but has no inbound edges, run one literal Grep for the name to catch dynamic/reflective references before calling it dead code.
 
 Report:
 

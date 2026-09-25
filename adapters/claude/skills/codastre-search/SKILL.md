@@ -15,7 +15,7 @@ The tool name depends on how the MCP server was configured: `mcp__plugin_codastr
 
 - Conceptual: "where do we validate JWTs", "retry logic for payments", "code that debounces sync"
 - Identifier lookup: a function/class/symbol name, even partially remembered
-- Cross-repo: you don't know which repo holds the code (omit `index_id`/`repo_url` → federated search across everything visible)
+- Cross-repo: you don't know which repo holds the code (omit `index_id`/`repo_url` → federated search across everything visible) — **but if all you have is prose (a ticket, an incident, a feature description), rank repos first with CORPUS_SEARCH / `codastre corpora` (the codastre-corpus-routing skill) and search inside the winner.** A federated QUERY ranks chunks, and on ticket prose one lucky chunk in support tooling outranks the owning service
 - Runbooks/docs: `content_kinds=["runbook","doc"]`; alert-driven lookup via `alert_ids=["KAFKA-1024"]` or `error_codes=["ERR_CONSUMER_LAG"]` is exact, not fuzzy
 
 **Use Grep/Glob/rg when the search is about literal text:**
@@ -58,6 +58,7 @@ Scoping (all optional):
 | `max_snippet_lines` | Cap this call's snippet bodies at N lines (`0` = none). Consumed by the local proxy, never sent to the server |
 | `snippets` | `false` → ranked locations only, no bodies. Same: proxy-only |
 | `format` | `"verbose"` (default) → `"compact"` → `"agent"`. Changes the *encoding* of the same result set, not which hits come back. See the ladder below |
+| `stacks` | Only repos assigned these technical stacks — `web`, `backend`, `mobile` (⊇ `android`, `ios`), `android`, `ios`, `data-engineering`, `ml-engineering`, `security`, `low-code`, `infrastructure`; OR'd; pruned *before* retrieval. **Unassigned repos match nothing** — if a stack-filtered call is empty, retry once without it. Pass only when the user names a stack. CLI `--stacks`, v0.18.1+ |
 
 **Cost and precision are different knobs.** `top_k` is the cost lever, linear in hydrated snippets.
 `language` / `path_prefix` / `repo_url` are **precision** levers that can *raise* tokens per hit:
@@ -105,16 +106,16 @@ hits, same ranking, different packaging:
 |---|---|---|
 | `verbose` (default) | server | Every field, full width |
 | `compact` | server | Drops what a caller can't act on (`chunk_id` where `symbol_name` can seed GRAPH instead, `content_kind` at `code`, `path_class` at `app`), abbreviates `blob_sha` to 12 hex, rounds `score` to 4 dp |
-| `agent` | local proxy | Renders the response as **text** — hits grouped by file, one path per file instead of one per hit, bodies as source with real line numbers instead of JSON-escaped strings. Rewritten to `compact` on the wire |
+| `agent` | server (v0.18.0+), or the local proxy when it can enrich | Renders the response as **text** — hits grouped by file, one path per file instead of one per hit, bodies as source with real line numbers instead of JSON-escaped strings. Built from the `compact` shape |
 
 Also available outside a per-call argument: `codastre serve --format agent`,
 `$CODASTRE_QUERY_FORMAT=agent` (for when the MCP config isn't yours to edit), and
-`codastre query|graph --format agent` on the CLI — which on this client is not an alternative but
-**the** way the rung arrives; see "the CLI plane is the default plane" below.
+`codastre query|graph --format agent` on the CLI. On a CLI older than v0.18.0 the CLI is **the** way
+the rung arrives on this client; from v0.18.0 either plane works — see "v0.18.0: either plane" below.
 
 **`format: "agent"` + `snippets: false` is the locate tier** — the cheapest way to ask "where is X".
-On Claude Code you ask for it as `codastre query … --format agent` (CLI bodies are already off), for
-the reason under "the CLI plane is the default plane" below.
+On v0.18.0+ ask for it on either plane; on v0.14.0–v0.17.x only as `codastre query … --format agent`
+(CLI bodies are already off), for the reason under "the CLI plane is the default plane" below.
 Measured at `top_k=5` on a deployed index, over the recorded payloads of one JSON-RPC frame (the MCP
 plane, which is what you actually pay: a tool result carries its payload twice):
 
@@ -148,17 +149,37 @@ out-of-date `codastre` binary, not a server limitation (`codastre query --help` 
 with an old proxy the rung is genuinely unreachable — say so rather than reporting a saving you
 couldn't ask for.
 
-**Advertised is not the same as reachable — the client can swallow the rendering.** `agent` puts the
+### v0.18.0: either plane
+
+**From `codastre` v0.18.0, MCP `format: "agent"` works in Claude Code.** The server renders `agent`
+itself and returns the rendering in both `content[0].text` and `structuredContent.rendering`, so a
+client that prefers `structuredContent` — this one — gets it. Verified on 2026-09-23 on
+v0.19.1: `{"format":"agent","rendering":"codastre · 2 hits …","status":"ok",…}`.
+
+Both planes then hand the model the same rendering; in context they are within a few percent (the MCP
+copy arrives JSON-escaped: +4% on one measured 3-hit bodies-on call). The CLI is cheaper only *on the
+wire*. **Use whichever plane is at hand, and read `rendering`.** The SessionStart hook states which
+era the installed binary is in, so there is nothing to probe.
+
+| `codastre version` | MCP `format: "agent"` here | CLI `--format agent --snippets` |
+|---|---|---|
+| v0.18.0+ | works | works |
+| v0.14.0 – v0.17.x | **no results** (summary only) | works |
+| ≤ v0.13.1 | no results | not available → MCP `verbose` |
+
+**The rest of this section, down to "Reading the response", applies to v0.14.0–v0.17.x.**
+
+**Advertised is not the same as reachable — the client can swallow the rendering (v0.14.0–v0.17.x).** `agent` puts the
 payload in `content[0].text` and a fixed summary in `structuredContent`, so **an MCP client that
 prefers `structuredContent` when both are present shows the model the summary and nothing else**:
-`status: "ok"`, a `result_count`, no results. Confirmed on 2026-08-18 against `codastre`
+`status: "ok"`, a `result_count`, no results. Observed in one MCP client on 2026-08-18 against `codastre`
 v0.14.0 by reading the JSON-RPC frame directly — the frame carried a 546 B rendering in
 `content[0].text`; the model received only the 111 B summary. The proxy is fine; this is a
 deterministic client-behaviour mismatch, not a codastre bug and not a flake.
 
 Say the rung was unreachable **from this client** — not that the rung is broken.
 
-### While that stands: the CLI plane is the default plane
+### While that stands: the CLI plane is the default plane (v0.14.0 – v0.17.x)
 
 Claude Code is the client that swallows the rendering, so over MCP the `agent` rung is not a saving
 worth probing for — it's a call that returns nothing. **Don't re-prove it. Go to the CLI plane, and
@@ -207,7 +228,7 @@ remedy once, and never repeat it:
 > binary, or `go install` from a checkout) and `codastre version` will confirm it.
 
 Don't guess a package name or run an installer unasked — which channel installed the binary is the
-user's to say; check `codastre version` first.
+user's to say (`codastre version` is the check).
 
 Measured 2026-08-18 against v0.14.0, `top_k=5`, one repo, both planes in one session over the **same
 five hits verified identical** (MCP frames captured by driving `codastre serve` over stdio; CLI from
@@ -230,10 +251,9 @@ the one that arrives here. Credit the rung, not the plane.
 **Stay on MCP when:** Bash isn't available (restricted subagent or sandbox); the CLI isn't installed
 or logged in (`codastre doctor`); you need `REGISTER` (no CLI equivalent); or the client *doesn't*
 swallow the rendering, in which case MCP `agent` is the cheapest rung of all and the detour buys
-nothing. This whole section is contingent on a client behaviour — when a `codastre` release stops
-emitting the summary, the detour goes away.
+nothing. That release is v0.18.0 — see "v0.18.0: either plane" above.
 
-Both planes are accounted for identically: a `codastre query|graph` Bash call is logged as
+Both planes are accounted for identically: a `codastre query|graph|corpora|contracts` Bash call is logged as
 `class: "codastre"`, `plane: "cli"`, satisfies `auto` mode's "try Codastre first", and is priced at
 the rendering's ratio — so switching planes doesn't make the cost invisible.
 
@@ -260,7 +280,7 @@ Query phrasing: lead with **code vocabulary**, not a full English question. `"ka
 
 Reading the scores: results carry an RRF `score`. If the top scores are all tiny and nearly **equal** (e.g. every hit ~0.016, decreasing by a hair), the dense and sparse legs found *disjoint* sets and nothing reinforced — that's a weak, low-confidence ranking, not a confident answer. Reword toward code vocabulary, add filters, or corroborate by Reading before trusting such a result.
 
-**A high-confidence ranking can still hide a wrong causal link between two of its own hits.** Observed in the field: asked how a push-notification token reaches the backend, QUERY correctly ranked both the real registration route and an unrelated third-party SDK call in the top-k, and the agent inferred a connection between them that was false — the SDK call never touches that route. Nothing in the envelope flags this: score, `stale`, and `hydration` were all fine on both hits, because both files are real and current. This is a different failure from staleness — it's a wrong inference *about* two correct hits, not a stale citation. Don't state a causal link between two QUERY hits ("A calls B", "A's result flows into B") without Reading the line that makes the connection; a hedge word like "presumably" in your own draft answer is the signal to go verify, not a license to publish it hedged. For a genuine "does A call B" question, use GRAPH's `calls` edges instead — that's the tool that actually verifies the edge; QUERY's ranking never does.
+**A high-confidence ranking can still hide a wrong causal link between two of its own hits.** Observed on one large single-repo corpus: asked how a push-notification token reaches the backend, QUERY correctly ranked both the real registration route and an unrelated third-party SDK call in the top-k, and the agent inferred a connection between them that was false — the SDK call never touches that route. Nothing in the envelope flags this: score, `stale`, and `hydration` were all fine on both hits, because both files are real and current. This is a different failure from staleness — it's a wrong inference *about* two correct hits, not a stale citation. Don't state a causal link between two QUERY hits ("A calls B", "A's result flows into B") without Reading the line that makes the connection; a hedge word like "presumably" in your own draft answer is the signal to go verify, not a license to publish it hedged. For a genuine "does A call B" question, use GRAPH's `calls` edges instead — that's the tool that actually verifies the edge; QUERY's ranking never does.
 
 Scope on multi-repo tenants: federated QUERY quality **degrades when the tenant holds large, unrelated, or fixture-heavy repos** — their files compete for the top-k and can crowd out the repo you care about. When you know the target, scope with `repo_url=` (single repo) or `path_prefix=` (plaintext — the server translates it); on a noisy tenant this is the default, not an optimization. Results carry `path_class` (`app | test | fixture | vendored | doc_asset`) — filter on it instead of guessing from path patterns; treat non-`app` hits as likely noise unless tests/fixtures are what you're looking for. (Servers also drop fixture corpora and vendored doc assets from indexing by default now, so most of that noise never appears.)
 
@@ -302,12 +322,10 @@ Each result (via the proxy):
 
 The rendering *is* the answer, and three things move when you ask for it:
 
-- **`structuredContent` no longer holds the results.** It carries a fixed-size summary — `format`,
-  `status`, `freshness`, a result or edge count, and `rendering_in` naming where the payload is.
-  **The answer is in `content[0].text`.** A client that reads only `structuredContent` gets no
-  results in this format. That trade is deliberate and applies to `agent` alone — asking for a text
-  rendering is an explicit request for one — and the JSON default still carries the full payload in
-  both representations.
+- **Read `rendering`.** On v0.18.0+ `structuredContent` carries it alongside `format`, `status`,
+  `freshness` and a result or edge count, and `content[0].text` holds the same string. On
+  v0.14.0–v0.17.x `structuredContent` is only a fixed summary with `rendering_in` pointing at
+  `content[0].text` — a client that reads only `structuredContent` (Claude Code) gets no results.
 - **`blob_sha` is abbreviated to 12 hex chars. Verify it by prefix, never by equality.** This is the
   normative comparison now, not a display concession: an abbreviated sha compared for equality
   against a full 40-hex hash marks every file stale. `git rev-parse --short=12` puts both sides in
@@ -326,6 +344,7 @@ stated once in the header instead of on every hit. Absence is the default, not a
 
 Envelope semantics that matter:
 
+- `results: []` with `status: "ok"` after a `stacks` filter → retry once without it first: unassigned repos match no stack.
 - `results: []` with `status: "ok"` is a **valid answer**: the corpus was searched and nothing matches. Do not immediately re-run the same query through grep "just in case" — reserve that for genuinely literal strings.
 - `filter_matched: false` (only present when you passed `path_prefix`) — your prefix matched **nothing indexed** (typo or stale path); fix the prefix rather than concluding "no results". `true`/absent means the empty result is genuine.
 - Federated responses scope `repo_freshness`/`mask_key_revs`/`repos` to the repos present in `results` and report `searched_repo_count` instead of the full `searched_repos` list; pass `full_envelope=true` only if you need the all-tenant maps.
@@ -335,7 +354,7 @@ Envelope semantics that matter:
 
 ## Token-efficient workflow
 
-1. One search with a well-phrased question — lead with **code vocabulary** (see phrasing above). A discursive first attempt is the single most common cause of a flat, low-value ranking and the re-query cascade that follows. On Claude Code, make it a CLI-plane call (`codastre query … --format agent --snippets`) once the one-line capability probe says the binary can hydrate; the parameter guidance above applies unchanged, flag for argument.
+1. One search with a well-phrased question — lead with **code vocabulary** (see phrasing above). A discursive first attempt is the single most common cause of a flat, low-value ranking and the re-query cascade that follows. Ask for the `agent` rung — over MCP on v0.18.0+, or as a CLI-plane call (`codastre query … --format agent --snippets`) on either era that can render; the parameter guidance above applies unchanged, flag for argument. If the question is prose with no known repo, route first (codastre-corpus-routing).
 2. Answer from the snippets when they suffice (they usually do for "where/what" questions).
 3. Read only the 1–2 files that need full context — targeted, with offsets from `line_start`/`line_end`.
 4. For structural follow-ups ("what calls this?"), switch to GRAPH (see the codastre-graph-navigation skill) instead of grepping for the symbol name.
@@ -353,7 +372,8 @@ Anti-patterns: grepping a symbol across the tree when QUERY would rank definitio
 
 ## Related
 
-- `/codastre:search <query>` — one-shot slash command (CLI-plane by default, same probe)
+- `/codastre:search <query>` — one-shot slash command
+- `/codastre:corpora <text>` and the **codastre-corpus-routing** skill — "which repo?" before "which chunk?"
 - `/codastre:compare <question>` — side-by-side QUERY vs grep demo with token accounting
 - `codastre doctor` (shell) — connectivity diagnostics when calls fail
 - **Source of truth:** this skill is compiled from the agent-neutral `core/retrieval-playbook.md` in the monorepo root — edit that first, then re-sync this skill.
