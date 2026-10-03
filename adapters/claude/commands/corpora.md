@@ -21,7 +21,7 @@ version that has the command (`codastre corpora`, v0.15.0+):
 
 ```bash
 codastre corpora "<text>" --top-k 5 [--stacks S] [--content-kinds K] --format agent \
-  --client claude-code-plugin/0.2.0   # --client needs v0.19.0; drop it on an older binary
+  --client claude-code-plugin/0.2.1   # --client needs v0.19.0; drop it on an older binary
 ```
 
 No Bash, no CLI, or a binary older than v0.15.0 → the `CORPUS_SEARCH` MCP tool

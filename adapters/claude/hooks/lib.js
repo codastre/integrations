@@ -340,7 +340,134 @@ const BASH_SEARCH = new RegExp(
 );
 
 function isBashSearch(command) {
-	return BASH_SEARCH.test(String(command || ''));
+	return BASH_SEARCH.test(maskQuoted(command));
+}
+
+// --- Quote masking ----------------------------------------------------------
+// The regexes above look for a command at a boundary, so a quoted *argument*
+// that merely mentions one — `git commit -m "fix (grep|rg) handling"`, an
+// `echo "; rg"`, a Python heredoc — used to classify as a text search (and,
+// in auto mode, got the commit blocked). maskQuoted blanks quoted text and
+// heredoc bodies before matching, keeping what the shell actually executes:
+//   - `$(…)` / backtick substitutions inside double quotes;
+//   - the string handed to a shell (`sh|bash|zsh|dash|ksh … -c '…'`, `eval '…'`);
+//   - a heredoc whose consumer is a shell (`bash <<EOF`).
+// The result is only ever matched, never run, so it also normalises the
+// shell's own command separators the regexes don't list: an unquoted newline
+// becomes `;` (a multi-line command's second line is a command too), and so do
+// the quotes around a string a shell will run.
+// Mirrored byte for byte by cli/internal/transcript/quotes.go in the codastre
+// repo (the transcript collector); change both, with the same test table.
+const SHELL_RUNNER = /(?:^|[\s|;&(`])(?:(?:ba|z|da|k)?sh|eval)(?:\s+-[A-Za-z]+)*\s+$/;
+const HEREDOC = /^<<-?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))/;
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+
+function blank(text) {
+	return ' '.repeat(text.length);
+}
+
+// Index of the quote closing the one at `open`, or s.length if unterminated.
+// Inside double quotes a `"` within `$(…)` or backticks belongs to the
+// substitution, not to the string.
+function closingQuote(s, open) {
+	if (s[open] === "'") {
+		const end = s.indexOf("'", open + 1);
+		return end < 0 ? s.length : end;
+	}
+	let depth = 0;
+	let tick = false;
+	for (let i = open + 1; i < s.length; i++) {
+		const c = s[i];
+		if (c === '\\') { i++; continue; }
+		if (c === '`') tick = !tick;
+		else if (c === '$' && s[i + 1] === '(') { depth++; i++; }
+		else if (c === ')' && depth > 0) depth--;
+		else if (c === '"' && depth === 0 && !tick) return i;
+	}
+	return s.length;
+}
+
+// Blanks a double-quoted body except its command substitutions.
+function maskDouble(body) {
+	let out = '';
+	let depth = 0;
+	let tick = false;
+	for (let i = 0; i < body.length; i++) {
+		const c = body[i];
+		if (c === '`') { tick = !tick; out += c; continue; }
+		if (c === '$' && body[i + 1] === '(') { depth++; out += '$('; i++; continue; }
+		if (c === ')' && depth > 0) { depth--; out += c; continue; }
+		out += depth > 0 || tick ? c : ' ';
+	}
+	return out;
+}
+
+// Whether the command a heredoc feeds (the first word of its segment) is a shell.
+function feedsShell(before) {
+	const segment = before.split(/[|;&\n(]/).pop().trim();
+	const word = segment.split(/\s+/)[0] || '';
+	return SHELLS.has(word.split('/').pop());
+}
+
+function maskQuoted(command) {
+	const s = String(command || '');
+	let out = '';
+	const heredocs = [];
+	let i = 0;
+	while (i < s.length) {
+		const c = s[i];
+		if (c === '\\') {
+			out += s.slice(i, i + 2);
+			i += 2;
+			continue;
+		}
+		if (c === "'" || c === '"') {
+			const end = closingQuote(s, i);
+			const body = s.slice(i + 1, end);
+			const tail = end < s.length ? 1 : 0;
+			if (SHELL_RUNNER.test(s.slice(0, i))) {
+				out += ';' + body.replace(/\n/g, ';') + (tail ? ';' : '');
+			} else {
+				out += c + (c === '"' ? maskDouble(body) : blank(body)) + (tail ? c : '');
+			}
+			i = end + 1;
+			continue;
+		}
+		if (c === '<' && s.startsWith('<<', i) && !s.startsWith('<<<', i)) {
+			const m = HEREDOC.exec(s.slice(i));
+			if (m) {
+				heredocs.push({ delim: m[1] || m[2] || m[3], keep: feedsShell(s.slice(0, i)) });
+				out += m[0];
+				i += m[0].length;
+				continue;
+			}
+		}
+		if (c === '\n') {
+			out += ';';
+			i++;
+			// Heredoc bodies follow the line that opened them, in order; each
+			// runs to a line that is exactly its delimiter (leading tabs
+			// allowed, for <<-).
+			for (const h of heredocs.splice(0)) {
+				while (i < s.length) {
+					let lineEnd = s.indexOf('\n', i);
+					if (lineEnd < 0) lineEnd = s.length;
+					const line = s.slice(i, lineEnd);
+					const sep = lineEnd < s.length ? ';' : '';
+					i = lineEnd + 1;
+					if (line.replace(/^\t+/, '').trimEnd() === h.delim) {
+						out += line + sep;
+						break;
+					}
+					out += (h.keep ? line : blank(line)) + sep;
+				}
+			}
+			continue;
+		}
+		out += c;
+		i++;
+	}
+	return out;
 }
 
 // Tool-name matcher for Codastre MCP calls under either namespace.
@@ -371,7 +498,7 @@ const CODASTRE_CLI = /(?:^|[|;&(`]\s*)(?:[^\s|;&()`]*[\/\\])?codastre(?:\.exe)?\
 // Returns 'query' | 'graph' | 'corpora' | 'corpus' | 'contracts' for a Codastre
 // CLI retrieval command, else null (`corpus` is the CLI's alias for `corpora`).
 function codastreCliCall(command) {
-	const m = CODASTRE_CLI.exec(String(command || ''));
+	const m = CODASTRE_CLI.exec(maskQuoted(command));
 	return m ? m[1].toLowerCase() : null;
 }
 
@@ -553,6 +680,7 @@ module.exports = {
 	BYTES_PER_TOKEN,
 	BASH_SEARCH,
 	isBashSearch,
+	maskQuoted,
 	CODASTRE_TOOL,
 	CODASTRE_CLI,
 	codastreCliCall,
