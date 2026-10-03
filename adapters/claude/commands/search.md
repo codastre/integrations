@@ -49,7 +49,7 @@ The CLI plane, mapping the parsed arguments to flags:
 
 ```bash
 codastre query "<text>" --top-k 6 [--language X] [--path-prefix P] [--repo-url URL] [--stacks S] \
-  --format agent --snippets [--max-snippet-lines N] --client claude-code-plugin/0.2.0
+  --format agent --snippets [--max-snippet-lines N] --client claude-code-plugin/0.2.1
 ```
 
 **Pass `--snippets` unless `--no-snippets` was given** — the CLI's default is bodies *off*, the

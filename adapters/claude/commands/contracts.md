@@ -21,7 +21,7 @@ With no `--status` the report is the **orphan report** (`orphan_exposer` + `orph
 
 ```bash
 codastre contracts [--kind K] [--status S ...] [--repo UUID ...] --format agent \
-  --client claude-code-plugin/0.2.0   # --client needs v0.19.0; drop it on an older binary
+  --client claude-code-plugin/0.2.1   # --client needs v0.19.0; drop it on an older binary
 ```
 
 No Bash, no CLI, or an older binary → the `CONTRACTS` MCP tool (`mcp__plugin_codastre_codastre__CONTRACTS`

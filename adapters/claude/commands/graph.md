@@ -31,7 +31,7 @@ If the seed symbol returns no edges, run a Codastre `QUERY` for it to recover th
 ```bash
 codastre version   # v0.18.0+ → either plane. v0.14.0–v0.17.x → CLI plane only. Older → MCP verbose.
 codastre graph "<seed>" --direction <dir> [--depth N] [--kind K] [--repo-url URL|--all] --format agent \
-  --client claude-code-plugin/0.2.0   # --client needs v0.19.0; drop it on an older binary
+  --client claude-code-plugin/0.2.1   # --client needs v0.19.0; drop it on an older binary
 ```
 
 On v0.18.0+ MCP `format: "agent"` works too: the rendering rides in `structuredContent.rendering` as well as `content[0].text`. On v0.14.0–v0.17.x it does not — Claude Code prefers `structuredContent`, which there holds only a fixed summary (`format`, `status`, `freshness`, `edge_count`, `rendering_in`), so over MCP it shows no edges (verified 2026-08-18). That's deterministic: don't spend a call probing it — use the CLI on those binaries. On a binary older than v0.14.0 (or with no Bash / no CLI / not logged in), use the MCP tool at `format: "verbose"` and say once that the rung needs v0.14.0+ — don't claim a saving you couldn't ask for, and don't repeat the notice.

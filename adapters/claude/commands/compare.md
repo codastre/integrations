@@ -35,7 +35,7 @@ So decide the plane yourself, once, with one cheap Bash call **before** `T0` so 
 codastre version          # v0.18.0+ → CLI plane (MCP agent also works). v0.14–0.17 → CLI plane. Older → MCP verbose.
 ```
 
-- **v0.18.0+ → still pin Agent A to the CLI plane**, for comparability with earlier runs and because a single plane per arm keeps the total interpretable. MCP `format: "agent"` would deliver the same rendering here (within a few percent in context), so it is not wrong — just don't let the subagent mix planes. The CLI command is the same as the next bullet, plus `--client claude-code-plugin/0.2.0`.
+- **v0.18.0+ → still pin Agent A to the CLI plane**, for comparability with earlier runs and because a single plane per arm keeps the total interpretable. MCP `format: "agent"` would deliver the same rendering here (within a few percent in context), so it is not wrong — just don't let the subagent mix planes. The CLI command is the same as the next bullet, plus `--client claude-code-plugin/0.2.1`.
 - **v0.14.0–v0.17.x → tell Agent A to run the CLI plane**: `codastre query "<text>" --top-k 6 [--language X] [--path-prefix P] --format agent --snippets` (drop `--snippets` only for a locate-tier question; the CLI's default is bodies off). This is now *inside* the measurement, not beside it: a `codastre query|graph` Bash call is logged as `class: "codastre"` with `plane: "cli"` and priced at the rendering's ratio, so the arm's total is complete.
 - **Older binary → tell Agent A to use the MCP tools at `format: "verbose"`** and to not attempt `agent` at all. Report the arm's cost as an **upper bound**, and say in one line that `--format agent` / `--snippets` need v0.14.0+ so the cheap rung was unreachable on this machine.
 
