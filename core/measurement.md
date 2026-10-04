@@ -74,7 +74,7 @@ search's cost when tracking is passive/off.
 
 - `class` ∈ { `codastre` (QUERY/GRAPH/REGISTER/SYNC **and** `codastre query|graph` run through a
   shell), `text-search` (grep/glob and shell grep/rg/ag/ack/fd/findstr/`git grep`/`find -name`),
-  `read` (file reads, logged only while an A/B mode is active) }.
+  `read` (Read calls and shell file reads, logged only while an A/B mode is active) }.
 - `plane` ∈ { `mcp`, `cli` } — Codastre records only. `cli` is a `codastre query|graph` shell call;
   `mcp` is a tool call. **This exists because the two are not interchangeable in a sum:** the CLI
   carries one copy of the payload and reaches the `agent` rung on clients that swallow it over MCP
@@ -134,10 +134,20 @@ session, ids and a hash only:
 
 ## Search-classification (what is a "text search")
 
-A shell command counts as a text search when it invokes a search tool at a command boundary
-(start, after `|`, `;`, `&`, `(`, or inside `$(…)`/backtick substitution): `grep`, `rg`, `ag`,
-`ack`, `fd`, `findstr`; **or** `git grep` anywhere; **or** `grep` reached via `xargs`; **or**
-`find … -name` (with the path argument optional). Codastre tool calls match the MCP tool name
+A shell command counts as a text search when a search tool — `grep`, `rg`, `ag`, `ack`, `fd`,
+`findstr` — reads the repo: at the head of a pipeline (start, after `;`, `&`, `&&`, `||`, `(`, or
+inside `$(…)`/backtick substitution), or after a `|` when the pipeline's head itself reads files
+(`cat`, `sed`, `head`/`tail`, `ls`, `find`, `fd`, `tree`, `awk`, `cut`, `nl`, `git
+ls-files|ls-tree|show|diff|cat-file|blame`); **or** `git grep` anywhere; **or** `grep` reached via
+`xargs`; **or** `find … -name` (with the path argument optional). A grep filtering another
+program's output — `git log | grep fix`, `security … | rg -c acct`, `go test | grep FAIL` — is not
+a search Codastre could have answered, and counts as `other`.
+
+A shell command that is not a search counts as a `read` when a pipeline is headed by a file viewer
+(`cat`, `head`, `tail`, `nl`, `less`, `more`, `bat`, `tac`) naming a file, or by `sed -n` (never
+`sed -i`), and nothing is redirected into a file — what the Read tool would have done.
+
+Codastre tool calls match the MCP tool name
 pattern for QUERY/GRAPH/REGISTER/SYNC. This regex must live in exactly one place per adapter and be
 imported by every consumer (enforcement, tracking, nudges) so the three can't drift.
 

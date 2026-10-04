@@ -26,6 +26,7 @@ const {
 	tokenBasis,
 	requestedRung,
 	isBashSearch,
+	isBashRead,
 	codastreCliCall,
 	cliRung,
 	CODASTRE_TOOL,
@@ -76,8 +77,11 @@ function classify(toolName, toolInput, mode) {
 		if (cli) {
 			return { class: 'codastre', plane: 'cli', detail: command.slice(0, 200) };
 		}
-		if (!isBashSearch(command)) return null;
-		return { class: 'text-search', detail: command.slice(0, 200) };
+		if (isBashSearch(command)) return { class: 'text-search', detail: command.slice(0, 200) };
+		// A file printed through the shell (`sed -n`, `cat`, `head`) is a read,
+		// counted like the Read tool: only while a mode is active.
+		if (mode && isBashRead(command)) return { class: 'read', detail: command.slice(0, 200) };
+		return null;
 	}
 	if (mode && toolName === 'Read') {
 		return { class: 'read', detail: toolInput.file_path || '' };
