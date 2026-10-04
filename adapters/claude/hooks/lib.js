@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { hasSearch, hasRead } = require('./shell');
 
 // Codastre is considered configured when the CLI has persisted config
 // (`codastre login` writes ~/.config/codastre/config.json) or the server /
@@ -320,27 +321,24 @@ function requestedRung(cls, toolInput, response) {
 	return typeof asked === 'string' ? asked : undefined;
 }
 
-// --- Search-tool classification (shared regex) ------------------------------
-// One source of truth for "this Bash command is a text search", imported by
-// mode.js (enforcement), track.js (accounting), and bash.js (nudge) so the
-// three can never drift apart. Matches:
-//   - grep/rg/ag/ack/fd/findstr at a command boundary (start, after |;&(, or
-//     inside $(…)/backtick command substitution);
-//   - `git grep` anywhere;
-//   - `xargs … grep` (grep reached via xargs, not at a boundary);
-//   - `find … -name` with the path argument optional (GNU `find -name x`).
-const BASH_SEARCH = new RegExp(
-	[
-		'(?:^|[|;&(`]\\s*)(?:grep|rg|ag|ack|fd|findstr)\\b',
-		'\\bgit\\s+grep\\b',
-		'\\bxargs\\b[^|;&]*\\bgrep\\b',
-		'(?:^|[|;&(`]\\s*)find\\s+[^|;&]*-name\\b',
-	].join('|'),
-	'i'
-);
-
+// --- Bash classification ----------------------------------------------------
+// One source of truth for what a Bash command is, imported by mode.js
+// (enforcement), track.js (accounting), and bash.js (nudge) so the three can
+// never drift apart. The structure lives in shell.js; the rules:
+//   - text search: grep/rg/ag/ack/fd/findstr heading a pipeline (start, after
+//     ;&|| ( or inside $(…)/backticks), or downstream of a stage that reads the
+//     repo (`cat f | grep x`, `git ls-files | grep _test`) — but not filtering
+//     another program's output (`git log | grep fix`, `codastre doctor | rg
+//     auth`); `git grep` and `xargs … grep` anywhere; `find … -name`;
+//   - read: a pipeline headed by a file viewer (cat/head/tail/nl/…) naming a
+//     file, or `sed -n` (never `sed -i`), with no redirect into a file — what
+//     the Read tool would have done. Search wins when a command does both.
 function isBashSearch(command) {
-	return BASH_SEARCH.test(maskQuoted(command));
+	return hasSearch(maskQuoted(command));
+}
+
+function isBashRead(command) {
+	return hasRead(maskQuoted(command));
 }
 
 // --- Quote masking ----------------------------------------------------------
@@ -631,6 +629,7 @@ function toolClass(toolName, toolInput) {
 		const command = String((toolInput && toolInput.command) || '');
 		if (codastreCliCall(command)) return 'codastre';
 		if (isBashSearch(command)) return 'text-search';
+		if (isBashRead(command)) return 'read';
 		return 'other';
 	}
 	if (name === 'Read' || name === 'NotebookRead') return 'read';
@@ -678,8 +677,8 @@ module.exports = {
 	tokenBasis,
 	requestedRung,
 	BYTES_PER_TOKEN,
-	BASH_SEARCH,
 	isBashSearch,
+	isBashRead,
 	maskQuoted,
 	CODASTRE_TOOL,
 	CODASTRE_CLI,

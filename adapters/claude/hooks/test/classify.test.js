@@ -3,13 +3,14 @@
 // Run with: node --test adapters/claude/hooks/test/*.test.js
 const test = require('node:test');
 const assert = require('node:assert');
-const { codastreCliCall, isBashSearch, maskQuoted } = require('../lib');
+const { codastreCliCall, isBashSearch, isBashRead, maskQuoted } = require('../lib');
 const { cases } = require('./bash-classify-fixtures.json');
 
-// The same precedence toolClass/mode.js apply: the CLI plane first.
+// The same precedence toolClass applies: the CLI plane, then search, then read.
 function classify(command) {
 	if (codastreCliCall(command)) return 'codastre';
 	if (isBashSearch(command)) return 'text-search';
+	if (isBashRead(command)) return 'read';
 	return 'other';
 }
 
