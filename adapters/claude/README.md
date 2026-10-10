@@ -22,6 +22,15 @@ commands/                    /codastre:status, :search, :graph, :impact, :compar
 output-styles/               topology-navigator
 ```
 
+## Session-start sync
+
+When a session starts inside a git checkout and the CLI is installed and logged in, the
+`SessionStart` hook runs `codastre sync --once` in the background. Commits made since the last
+session then reach your branch's overlay before the first query. The sync is detached and its
+output is discarded, so it never delays the session or fails it. Set `CODASTRE_SESSION_SYNC=0`
+to turn it off. `codastre query` still syncs HEAD itself before searching
+(`CODASTRE_EAGER_SYNC_BUDGET`, default 2 s), so this is a head start, not a requirement.
+
 ## Session events log (always on, local only)
 
 `hooks/session_events.js` listens on `PreCompact`, `PostCompact` and `PostToolUseFailure` and
