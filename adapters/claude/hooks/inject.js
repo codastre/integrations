@@ -187,7 +187,7 @@ async function main() {
 		else {
 			emit(AWARENESS + autoScopeLine(data && data.cwd) + planeLine());
 			// Phase C: give this checkout's overlay a head start (detached, never awaited).
-			startSessionSync(data && data.cwd, { cli: resolveCli() });
+			startSessionSync(data && data.cwd, { cli: resolveCli(), source: data && data.source });
 		}
 	} else if (hookEventName === 'SubagentStart') {
 		// Subagents get awareness only when the tools actually work — never a setup nag.
