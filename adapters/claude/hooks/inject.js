@@ -15,7 +15,9 @@ const {
 	cliCapabilities,
 	clientFlag,
 	readStdinJson,
+	resolveCli,
 } = require('./lib');
+const { startSessionSync } = require('./session_sync');
 
 const hookEventName = process.argv[2];
 
@@ -182,7 +184,11 @@ async function main() {
 		// Speak even when unconfigured, but only to guide setup (install > login > ready).
 		if (!installed) emit(INSTALL_HINT);
 		else if (!configured) emit(LOGIN_HINT);
-		else emit(AWARENESS + autoScopeLine(data && data.cwd) + planeLine());
+		else {
+			emit(AWARENESS + autoScopeLine(data && data.cwd) + planeLine());
+			// Phase C: give this checkout's overlay a head start (detached, never awaited).
+			startSessionSync(data && data.cwd, { cli: resolveCli() });
+		}
 	} else if (hookEventName === 'SubagentStart') {
 		// Subagents get awareness only when the tools actually work — never a setup nag.
 		if (installed && configured) {
