@@ -46,7 +46,7 @@ test('starts a detached, unref-ed `sync --once` in the checkout', () => {
 	assert.strictEqual(calls.length, 1);
 	const [c] = calls;
 	assert.strictEqual(c.cmd, '/bin/codastre');
-	assert.deepStrictEqual(c.args, ['sync', '--once']);
+	assert.deepStrictEqual(c.args, ['sync', '--once', '--dedup']);
 	assert.strictEqual(c.opts.cwd, sub);
 	assert.strictEqual(c.opts.detached, true);
 	assert.strictEqual(c.opts.stdio, 'ignore');
@@ -73,3 +73,16 @@ test('a spawn that throws is swallowed', () => {
 	};
 	assert.strictEqual(startSessionSync(sub, { cli: '/bin/codastre', env: {}, spawnFn: boom }), false);
 });
+
+test('runs on startup/resume (or no source), not on clear/compact', () => {
+	const { sub } = checkout();
+	const { fn, calls } = fakeSpawn();
+	const opts = (source) => ({ cli: '/bin/codastre', env: {}, spawnFn: fn, source });
+	assert.strictEqual(startSessionSync(sub, opts('startup')), true);
+	assert.strictEqual(startSessionSync(sub, opts('resume')), true);
+	assert.strictEqual(startSessionSync(sub, opts(undefined)), true);
+	assert.strictEqual(startSessionSync(sub, opts('clear')), false);
+	assert.strictEqual(startSessionSync(sub, opts('compact')), false);
+	assert.strictEqual(calls.length, 3);
+});
+

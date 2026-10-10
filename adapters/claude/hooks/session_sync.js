@@ -10,6 +10,13 @@
 // awaited — so the hook returns at once and a slow or failing sync can never
 // delay or break the session. The CLI's own eager sync on `codastre query`
 // remains the backstop.
+//
+// Not spammy by construction: `--dedup` makes the CLI skip a HEAD that was synced
+// in the last 15 minutes, is being synced, or just failed — state it shares with
+// every watcher and query in the checkout — and only a session that actually
+// starts or resumes runs it (SessionStart also fires on /clear and compaction,
+// where HEAD has not moved). A CLI that predates `--dedup` rejects the flag and
+// exits; detached, that costs nothing and simply means no head start.
 
 const fs = require('fs');
 const path = require('path');
@@ -28,13 +35,18 @@ function inGitCheckout(dir) {
 	}
 }
 
-// Start `codastre sync --once` in the background for cwd. Returns whether a
-// sync was started. Opt out with CODASTRE_SESSION_SYNC=0.
-function startSessionSync(cwd, { cli, env = process.env, spawnFn = spawn } = {}) {
+// SessionStart `source` values that can follow new commits. Absent (older Claude
+// Code) is treated as a start.
+const SYNC_SOURCES = new Set(['startup', 'resume']);
+
+// Start `codastre sync --once --dedup` in the background for cwd. Returns whether
+// a sync was started. Opt out with CODASTRE_SESSION_SYNC=0.
+function startSessionSync(cwd, { cli, source, env = process.env, spawnFn = spawn } = {}) {
 	if (env.CODASTRE_SESSION_SYNC === '0') return false;
+	if (source && !SYNC_SOURCES.has(source)) return false;
 	if (!cli || !inGitCheckout(cwd)) return false;
 	try {
-		const child = spawnFn(cli, ['sync', '--once'], {
+		const child = spawnFn(cli, ['sync', '--once', '--dedup'], {
 			cwd: cwd || process.cwd(),
 			detached: true,
 			stdio: 'ignore',
